@@ -1,0 +1,435 @@
+{
+  "table_name": "pe_ext_actinst",
+  "description": "流程引擎活动实例扩展表，记录流程中每个活动节点（Activity）的执行实例信息",
+  "business_context": "这是性能分析的核心表之一。每条记录代表一个BPMN活动节点的执行实例（如用户任务、服务任务、网关等）。通过分析活动实例的执行时间，可以定位流程性能瓶颈所在的具体环节。",
+  "row_count_estimate": "数据量通常是流程实例的数倍（一个流程包含多个活动）",
+  "primary_key": "id",
+  "indexes": [
+    {
+      "name": "PE_EXT_ACTINST_pkey",
+      "type": "PRIMARY KEY",
+      "columns": [
+        "id"
+      ],
+      "description": "主键索引"
+    },
+    {
+      "name": "pe_idx_ext_actinst_proc_inst_id",
+      "type": "BTREE",
+      "columns": [
+        "proc_inst_id"
+      ],
+      "description": "流程实例ID索引，用于快速查询某个流程实例包含的所有活动"
+    },
+    {
+      "name": "pe_idx_ext_actinst_start_time",
+      "type": "BTREE",
+      "columns": [
+        "start_time"
+      ],
+      "description": "开始时间索引，支持按时间范围高效过滤"
+    },
+    {
+      "name": "pe_idx_ext_actinst_end_time",
+      "type": "BTREE",
+      "columns": [
+        "end_time"
+      ],
+      "description": "结束时间索引，支持按完成时间范围查询"
+    },
+    {
+      "name": "pe_idx_ext_actinst_call_proc_inst_id",
+      "type": "BTREE",
+      "columns": [
+        "call_proc_inst_id"
+      ],
+      "description": "子流程实例ID索引，用于追踪调用子流程的活动"
+    }
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "type": "varchar(255)",
+      "nullable": false,
+      "description": "活动实例唯一标识符（主键）",
+      "business_meaning": "每个活动节点执行一次就会生成一个唯一ID",
+      "indexed": true,
+      "sample_values": [
+        "act_inst_001",
+        "act_inst_002"
+      ]
+    },
+    {
+      "name": "proc_inst_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "所属流程实例ID",
+      "business_meaning": "关联到pe_ext_procinst表的id字段，标识这个活动属于哪个流程实例",
+      "indexed": true,
+      "foreign_key": {
+        "table": "pe_ext_procinst",
+        "column": "id",
+        "relationship": "many_to_one"
+      },
+      "usage_hint": "性能分析中最常用的关联字段，用于聚合同一流程下所有活动的执行情况"
+    },
+    {
+      "name": "activity_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "活动定义ID",
+      "business_meaning": "BPMN模型中定义的活动节点ID（如'Task_1'），同一个活动定义可能被执行多次",
+      "indexed": false,
+      "usage_hint": "用于统计某个特定活动节点的执行次数和平均耗时"
+    },
+    {
+      "name": "activity_name",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "活动显示名称",
+      "business_meaning": "BPMN模型中定义的活动节点可读名称（如'审批任务'），比activity_id更易理解",
+      "indexed": false,
+      "usage_hint": "性能报告中优先显示此名称，而非activity_id"
+    },
+    {
+      "name": "activity_type",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "活动类型",
+      "business_meaning": "BPMN活动节点的类型，决定了活动的行为特征",
+      "indexed": false,
+      "possible_values": [
+        {
+          "value": "userTask",
+          "description": "用户任务 - 需要人工操作，通常耗时较长且不可控"
+        },
+        {
+          "value": "serviceTask",
+          "description": "服务任务 - 自动执行的服务调用，是性能优化的重点关注对象"
+        },
+        {
+          "value": "startEvent",
+          "description": "开始事件 - 流程的起始节点"
+        },
+        {
+          "value": "endEvent",
+          "description": "结束事件 - 流程的终止节点"
+        },
+        {
+          "value": "callActivity",
+          "description": "调用活动 - 调用子流程，需要关联call_proc_inst_id分析子流程性能"
+        },
+        {
+          "value": "subProcess",
+          "description": "子流程 - 嵌入式子流程"
+        },
+        {
+          "value": "exclusiveGateway",
+          "description": "排他网关 - 条件分支"
+        },
+        {
+          "value": "parallelGateway",
+          "description": "并行网关 - 并行执行分支"
+        },
+        {
+          "value": "boundaryEvent",
+          "description": "边界事件 - 异常或超时处理"
+        },
+        {
+          "value": "intermediateCatchEvent",
+          "description": "中间捕获事件 - 等待外部事件"
+        }
+      ],
+      "usage_hint": "按activity_type分组统计，可以分析哪类活动耗时最多（如serviceTask普遍慢，说明外部服务响应慢）"
+    },
+    {
+      "name": "status",
+      "type": "varchar(32)",
+      "nullable": true,
+      "description": "活动状态",
+      "business_meaning": "活动的当前执行状态或最终状态，用于UI监控显示",
+      "indexed": false,
+      "possible_values": [
+        {
+          "value": "COMPLETED",
+          "description": "已完成 - 活动正常执行完成",
+          "priority": 1
+        },
+        {
+          "value": "COMPLETED_WITH_ERROR",
+          "description": "完成但有错误 - 虽然完成但过程中出现了非致命错误",
+          "priority": 2
+        },
+        {
+          "value": "RUNNING",
+          "description": "运行中 - 活动正在执行",
+          "priority": 4
+        },
+        {
+          "value": "RUNNING_WAITING",
+          "description": "运行等待中 - 等待外部输入或事件（如用户任务等待审批）",
+          "priority": 3
+        },
+        {
+          "value": "RUNNING_DEBUG",
+          "description": "调试模式运行 - 处于断点调试状态",
+          "priority": 5
+        },
+        {
+          "value": "FAILED",
+          "description": "失败 - 活动执行失败，是性能分析中需要重点关注的异常状态",
+          "priority": 6
+        },
+        {
+          "value": "TERMINATED",
+          "description": "已终止 - 流程被人工终止",
+          "priority": 7
+        },
+        {
+          "value": "TERMINATED_SYSTEM",
+          "description": "系统终止 - 由系统自动终止（如超时）",
+          "priority": 8
+        }
+      ],
+      "usage_hint": "性能分析时，应区分RUNNING状态（排除未完成的记录）和FAILED状态（失败记录可能包含重试导致的额外耗时）"
+    },
+    {
+      "name": "sub_status",
+      "type": "varchar(32)",
+      "nullable": true,
+      "description": "活动子状态",
+      "business_meaning": "对status的补充说明，提供更细粒度的状态信息（如调试状态详情）",
+      "indexed": false,
+      "possible_values": [
+        {
+          "value": "BREAKING",
+          "description": "断点中 - 活动在调试断点处暂停"
+        },
+        {
+          "value": "SUB_BREAKING",
+          "description": "子流程断点中 - 子流程在断点处暂停"
+        },
+        {
+          "value": "RUNNING",
+          "description": "正常运行"
+        },
+        {
+          "value": "SUB_RUNNING",
+          "description": "子流程运行中"
+        },
+        {
+          "value": "FAILED",
+          "description": "失败"
+        },
+        {
+          "value": "SUB_FAILED",
+          "description": "子流程失败"
+        }
+      ],
+      "usage_hint": "性能分析中通常忽略调试相关的sub_status（BREAKING, SUB_BREAKING），因为调试会人为拉长执行时间"
+    },
+    {
+      "name": "start_time",
+      "type": "timestamp",
+      "nullable": true,
+      "description": "活动开始时间",
+      "business_meaning": "活动节点开始执行的时间戳",
+      "indexed": true,
+      "usage_hint": "性能分析的核心字段之一，用于计算活动执行时长（end_time - start_time）和时间范围过滤"
+    },
+    {
+      "name": "end_time",
+      "type": "timestamp",
+      "nullable": true,
+      "description": "活动结束时间",
+      "business_meaning": "活动节点执行完成的时间戳，如果为NULL表示活动仍在运行中",
+      "indexed": true,
+      "usage_hint": "查询历史性能数据时必须过滤end_time IS NOT NULL，否则会包含未完成的记录导致统计错误"
+    },
+    {
+      "name": "error_message",
+      "type": "varchar(4000)",
+      "nullable": true,
+      "description": "错误信息详情",
+      "business_meaning": "活动执行失败时的错误堆栈或详细描述，最大4000字符",
+      "indexed": false,
+      "usage_hint": "性能分析时，可以统计高频错误信息，识别系统性问题（如特定服务频繁超时）"
+    },
+    {
+      "name": "error_message_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "错误信息标识符",
+      "business_meaning": "错误的分类代码或ID，用于归类相同类型的错误",
+      "indexed": false,
+      "usage_hint": "按error_message_id分组统计，比直接分析error_message更高效"
+    },
+    {
+      "name": "create_time",
+      "type": "timestamp",
+      "nullable": false,
+      "default": "now()",
+      "description": "记录创建时间",
+      "business_meaning": "数据库记录插入时间，由Hibernate自动生成（@CreationTimestamp）",
+      "indexed": false,
+      "usage_hint": "通常等于start_time，性能分析中较少使用"
+    },
+    {
+      "name": "update_time",
+      "type": "timestamp",
+      "nullable": false,
+      "default": "now()",
+      "description": "记录更新时间",
+      "business_meaning": "数据库记录最后更新时间，由Hibernate自动维护（@UpdateTimestamp）",
+      "indexed": false,
+      "usage_hint": "通常等于end_time，性能分析中较少使用"
+    },
+    {
+      "name": "tenant_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "租户ID",
+      "business_meaning": "多租户环境下的租户标识，用于数据隔离",
+      "indexed": false,
+      "usage_hint": "查询时必须添加tenant_id过滤条件，确保数据安全"
+    },
+    {
+      "name": "call_proc_inst_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "调用的子流程实例ID",
+      "business_meaning": "如果activity_type='callActivity'，此字段记录被调用的子流程实例ID，可关联到pe_ext_procinst.id",
+      "indexed": true,
+      "foreign_key": {
+        "table": "pe_ext_procinst",
+        "column": "id",
+        "relationship": "many_to_one"
+      },
+      "usage_hint": "分析callActivity性能时，需要JOIN pe_ext_procinst表查询子流程的完整执行时间"
+    },
+    {
+      "name": "task_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "任务ID",
+      "business_meaning": "如果activity_type='userTask'，此字段记录Flowable引擎中对应的Task ID，可关联到Flowable原生的ACT_RU_TASK或ACT_HI_TASKINST表",
+      "indexed": false,
+      "usage_hint": "分析用户任务性能时，可以通过task_id关联查询任务的assignee（处理人）和claim_time（认领时间）"
+    },
+    {
+      "name": "retry_times",
+      "type": "integer",
+      "nullable": true,
+      "description": "重试次数",
+      "business_meaning": "活动执行失败后的重试次数（如服务调用失败自动重试）",
+      "indexed": false,
+      "usage_hint": "性能分析时，重试次数>0的记录需要特别关注，说明存在不稳定因素。可以统计平均重试次数和重试成功率"
+    }
+  ],
+  "relationships": [
+    {
+      "type": "many_to_one",
+      "target_table": "pe_ext_procinst",
+      "foreign_key": "proc_inst_id",
+      "target_column": "id",
+      "description": "一个流程实例包含多个活动实例",
+      "join_example": "LEFT JOIN pe_ext_procinst p ON a.proc_inst_id = p.id"
+    },
+    {
+      "type": "many_to_one",
+      "target_table": "pe_ext_procinst",
+      "foreign_key": "call_proc_inst_id",
+      "target_column": "id",
+      "description": "callActivity活动调用的子流程实例",
+      "join_example": "LEFT JOIN pe_ext_procinst sub ON a.call_proc_inst_id = sub.id WHERE a.activity_type = 'callActivity'"
+    }
+  ],
+  "common_queries": [
+    {
+      "description": "查询最慢的10个活动类型（按平均执行时间）",
+      "business_scenario": "识别性能瓶颈在哪类活动节点",
+      "sql": "SELECT \n  activity_type,\n  activity_name,\n  COUNT(*) as execution_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))::numeric)), 2) as avg_duration_seconds,\n  ROUND((MAX(EXTRACT(EPOCH FROM (end_time - start_time))::numeric)), 2) as max_duration_seconds\nFROM pe_ext_actinst\nWHERE status = 'COMPLETED' \n  AND end_time IS NOT NULL \n  AND start_time IS NOT NULL\n  AND sub_status NOT IN ('BREAKING', 'SUB_BREAKING')\nGROUP BY activity_type, activity_name\nHAVING COUNT(*) > 5\nORDER BY avg_duration_seconds DESC\nLIMIT 10;",
+      "optimization_hints": [
+        "使用索引：pe_idx_ext_actinst_start_time, pe_idx_ext_actinst_end_time",
+        "HAVING COUNT(*) > 5 过滤掉执行次数过少的活动（避免统计误差）",
+        "排除调试状态的记录（sub_status NOT IN ('BREAKING', 'SUB_BREAKING')）"
+      ]
+    },
+    {
+      "description": "查询指定流程实例的活动执行时间分布",
+      "business_scenario": "定位某个流程实例中耗时最多的环节",
+      "sql": "SELECT \n  activity_name,\n  activity_type,\n  start_time,\n  end_time,\n  EXTRACT(EPOCH FROM (end_time - start_time))::numeric as duration_seconds,\n  status,\n  error_message\nFROM pe_ext_actinst\nWHERE proc_inst_id = 'proc_inst_xxx'\nORDER BY start_time ASC;",
+      "optimization_hints": [
+        "使用索引：pe_idx_ext_actinst_proc_inst_id",
+        "结果按start_time排序，可以清晰看到流程执行的时间线"
+      ]
+    },
+    {
+      "description": "统计最近7天各活动类型的失败率",
+      "business_scenario": "识别哪类活动节点最不稳定",
+      "sql": "SELECT \n  activity_type,\n  COUNT(*) as total_executions,\n  SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) as failed_count,\n  ROUND((100.0 * SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) / COUNT(*)), 2) as failure_rate_percent,\n  SUM(retry_times) as total_retries\nFROM pe_ext_actinst\nWHERE start_time >= CURRENT_TIMESTAMP - INTERVAL '7 days'\nGROUP BY activity_type\nHAVING COUNT(*) > 10\nORDER BY failure_rate_percent DESC;",
+      "optimization_hints": [
+        "使用索引：pe_idx_ext_actinst_start_time",
+        "时间范围过滤优先使用start_time（有索引）",
+        "重试次数和失败率结合分析，可以判断系统的容错能力"
+      ]
+    },
+    {
+      "description": "分析callActivity调用子流程的性能",
+      "business_scenario": "评估子流程对父流程性能的影响",
+      "sql": "SELECT \n  a.activity_name as call_activity_name,\n  a.id as activity_instance_id,\n  EXTRACT(EPOCH FROM (a.end_time - a.start_time))::numeric as call_activity_duration,\n  sub.proc_def_id as sub_process_def_id,\n  EXTRACT(EPOCH FROM (sub.end_time - sub.start_time))::numeric as sub_process_duration,\n  sub.status as sub_process_status\nFROM pe_ext_actinst a\nLEFT JOIN pe_ext_procinst sub ON a.call_proc_inst_id = sub.id\nWHERE a.activity_type = 'callActivity'\n  AND a.end_time IS NOT NULL\n  AND a.start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\nORDER BY call_activity_duration DESC\nLIMIT 20;",
+      "optimization_hints": [
+        "使用索引：pe_idx_ext_actinst_call_proc_inst_id, pe_idx_ext_actinst_start_time",
+        "子流程耗时通常略小于callActivity耗时（因为callActivity包含调用开销）",
+        "如果两者时间差异很大，说明调用机制存在性能问题"
+      ]
+    },
+    {
+      "description": "统计用户任务的平均等待时间（从创建到完成）",
+      "business_scenario": "评估人工审批环节对流程周期的影响",
+      "sql": "SELECT \n  activity_name,\n  COUNT(*) as task_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))::numeric / 3600)), 2) as avg_wait_hours,\n  ROUND((MAX(EXTRACT(EPOCH FROM (end_time - start_time))::numeric / 3600)), 2) as max_wait_hours\nFROM pe_ext_actinst\nWHERE activity_type = 'userTask'\n  AND status = 'COMPLETED'\n  AND end_time IS NOT NULL\n  AND start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\nGROUP BY activity_name\nORDER BY avg_wait_hours DESC;",
+      "optimization_hints": [
+        "用户任务通常耗时最长（因为依赖人工操作）",
+        "性能优化应关注自动化任务（serviceTask），而非userTask",
+        "但可以通过此查询识别流程设计问题（如审批环节过多）"
+      ]
+    },
+    {
+      "description": "查询高频错误的活动节点",
+      "business_scenario": "识别系统性问题和需要优先修复的环节",
+      "sql": "SELECT \n  activity_name,\n  activity_type,\n  error_message_id,\n  COUNT(*) as error_count,\n  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as error_percentage,\n  MAX(error_message) as sample_error_message\nFROM pe_ext_actinst\nWHERE status = 'FAILED'\n  AND start_time >= CURRENT_TIMESTAMP - INTERVAL '7 days'\nGROUP BY activity_name, activity_type, error_message_id\nORDER BY error_count DESC\nLIMIT 10;",
+      "optimization_hints": [
+        "窗口函数计算每种错误占总错误的百分比",
+        "sample_error_message提供错误详情样例（用于快速诊断）",
+        "高频错误需要优先处理，可能是服务配置错误或外部依赖不稳定"
+      ]
+    }
+  ],
+  "performance_optimization_tips": [
+    "查询时务必添加时间范围过滤（start_time或end_time），利用索引避免全表扫描",
+    "计算执行时长时，必须同时检查end_time IS NOT NULL和start_time IS NOT NULL",
+    "排除调试状态的记录（sub_status NOT IN ('BREAKING', 'SUB_BREAKING')），避免统计失真",
+    "按activity_type分组分析时，serviceTask和callActivity是性能优化的重点",
+    "userTask耗时通常最长但无法优化（依赖人工），应在分析中单独处理",
+    "JOIN pe_ext_procinst时优先使用proc_inst_id索引，避免使用call_proc_inst_id（较少使用）",
+    "分析失败原因时，优先使用error_message_id分组，而非直接分析error_message（性能更好）",
+    "重试次数>0的记录需要特殊处理，因为重试会显著增加实际执行时间"
+  ],
+  "data_quality_notes": [
+    "如果end_time为NULL但status='COMPLETED'，说明数据不一致（可能是系统异常未更新）",
+    "如果执行时长<0（end_time < start_time），说明时间戳记录错误",
+    "activity_type为NULL的记录很少见，可能是历史遗留数据",
+    "对于callActivity，call_proc_inst_id应该不为NULL，否则无法追踪子流程",
+    "retry_times为NULL时应视为0（从未重试）"
+  ],
+  "ai_analysis_guidelines": [
+    "生成SQL时，默认添加tenant_id过滤（除非用户明确说明跨租户分析）",
+    "时间范围查询优先使用start_time（有索引），除非用户明确要求按完成时间过滤",
+    "计算执行时长统一使用公式：EXTRACT(EPOCH FROM (end_time - start_time))",
+    "过滤条件应包括：status = 'COMPLETED', end_time IS NOT NULL, sub_status NOT IN ('BREAKING', 'SUB_BREAKING')",
+    "聚合查询时，建议添加HAVING COUNT(*) > N过滤低频数据（N根据场景选择5-10）",
+    "结果排序优先使用有意义的业务指标（如avg_duration, failure_rate），而非记录数量",
+    "JOIN操作时，使用LEFT JOIN确保主表数据不丢失（如子流程可能已被删除）",
+    "分析结果应区分不同activity_type给出差异化建议（如serviceTask优化服务响应，userTask优化流程设计）"
+  ]
+}

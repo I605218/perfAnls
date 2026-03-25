@@ -1,0 +1,47 @@
+[project]
+name = "perfAnls"
+version = "0.1.0"
+description = "AI-powered Process Engine Performance Analyzer"
+authors = [
+    {name = "SAP DMC Team"}
+]
+requires-python = ">=3.11"
+readme = "README.md"
+
+dependencies = [
+    "fastapi>=0.115.12",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.10.6",
+    "pydantic-settings>=2.7.1",
+    "asyncpg>=0.30.0",
+    "pandas>=2.2.3",
+    "numpy>=2.1.3",
+    "anthropic>=0.40.0",
+    "python-dotenv>=1.0.1",
+    "httpx>=0.28.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.25.2",
+    "ruff>=0.9.3",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"

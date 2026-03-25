@@ -1,0 +1,398 @@
+{
+  "table_name": "pe_ext_varinst",
+  "description": "流程引擎变量实例扩展表，记录流程执行过程中的所有变量数据（流程变量、活动变量、输入输出参数等）",
+  "business_context": "这是性能分析的辅助表。虽然不直接参与性能计算，但通过分析变量数据可以理解流程执行的业务上下文、识别数据量对性能的影响（如大字段变量），以及追踪哪些输入参数会导致性能问题。",
+  "row_count_estimate": "数据量通常是流程实例的数倍（每个流程包含多个变量），是三张表中数据量最大的",
+  "primary_key": "id",
+  "indexes": [
+    {
+      "name": "PE_EXT_VARINST_pkey",
+      "type": "PRIMARY KEY",
+      "columns": [
+        "id"
+      ],
+      "description": "主键索引"
+    },
+    {
+      "name": "pe_idx_ext_varinst_proc_inst_id",
+      "type": "BTREE",
+      "columns": [
+        "proc_inst_id"
+      ],
+      "description": "流程实例ID索引，用于查询某个流程的所有变量"
+    },
+    {
+      "name": "pe_idx_ext_varinst_name",
+      "type": "BTREE",
+      "columns": [
+        "name"
+      ],
+      "description": "变量名索引，用于查询特定变量的分布和使用情况"
+    },
+    {
+      "name": "pe_idx_ext_varinst_create_time",
+      "type": "BTREE",
+      "columns": [
+        "create_time"
+      ],
+      "description": "创建时间索引，用于按时间范围过滤变量"
+    }
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "type": "varchar(255)",
+      "nullable": false,
+      "description": "变量实例唯一标识符（主键）",
+      "business_meaning": "每个变量创建或更新时生成一个唯一ID",
+      "indexed": true,
+      "sample_values": [
+        "var_inst_001",
+        "var_inst_002"
+      ]
+    },
+    {
+      "name": "proc_inst_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "所属流程实例ID",
+      "business_meaning": "关联到pe_ext_procinst表的id字段，标识这个变量属于哪个流程实例",
+      "indexed": true,
+      "foreign_key": {
+        "table": "pe_ext_procinst",
+        "column": "id",
+        "relationship": "many_to_one"
+      },
+      "usage_hint": "查询某个流程实例的所有变量时使用，是最常用的关联字段"
+    },
+    {
+      "name": "category",
+      "type": "varchar(32)",
+      "nullable": true,
+      "description": "变量分类",
+      "business_meaning": "区分变量的来源和用途，帮助理解变量在流程中的角色",
+      "indexed": false,
+      "possible_values": [
+        {
+          "value": "PV",
+          "description": "Process Variable - 流程变量，作用域为整个流程实例，可被所有活动访问",
+          "usage_scenario": "存储流程级别的业务数据，如订单ID、客户信息等"
+        },
+        {
+          "value": "Input",
+          "description": "输入参数 - 流程或活动的输入参数",
+          "usage_scenario": "记录流程启动时的输入参数或活动节点的输入数据",
+          "performance_note": "输入参数的大小和复杂度可能影响流程启动性能"
+        },
+        {
+          "value": "Output",
+          "description": "输出参数 - 流程或活动的输出结果",
+          "usage_scenario": "记录流程执行结果或活动节点的输出数据",
+          "performance_note": "输出参数的序列化和持久化可能影响流程完成性能"
+        }
+      ],
+      "usage_hint": "性能分析时，可以统计不同category的变量数量和大小，评估数据管理对性能的影响"
+    },
+    {
+      "name": "name",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "变量名称",
+      "business_meaning": "变量的标识符，在同一作用域内唯一（如流程级或活动级）",
+      "indexed": true,
+      "sample_values": [
+        "orderId",
+        "customerName",
+        "approvalResult",
+        "totalAmount"
+      ],
+      "usage_hint": "性能分析时，可以统计高频使用的变量名，识别哪些业务数据对性能敏感"
+    },
+    {
+      "name": "type",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "变量数据类型",
+      "business_meaning": "变量值的Java类型或逻辑类型，决定了变量的存储和序列化方式",
+      "indexed": false,
+      "possible_values": [
+        {
+          "value": "string",
+          "description": "字符串类型 - 存储文本数据",
+          "performance_note": "长字符串（>1000字符）可能影响性能"
+        },
+        {
+          "value": "integer",
+          "description": "整数类型 - 存储数值数据",
+          "performance_note": "基本类型，性能开销最小"
+        },
+        {
+          "value": "long",
+          "description": "长整数类型",
+          "performance_note": "基本类型，性能开销最小"
+        },
+        {
+          "value": "double",
+          "description": "浮点数类型",
+          "performance_note": "基本类型，性能开销最小"
+        },
+        {
+          "value": "boolean",
+          "description": "布尔类型",
+          "performance_note": "基本类型，性能开销最小"
+        },
+        {
+          "value": "date",
+          "description": "日期时间类型",
+          "performance_note": "需要序列化，有一定开销"
+        },
+        {
+          "value": "json",
+          "description": "JSON对象类型 - 存储复杂结构化数据",
+          "performance_note": "JSON序列化/反序列化开销较大，大JSON对象显著影响性能"
+        },
+        {
+          "value": "serializable",
+          "description": "Java序列化对象",
+          "performance_note": "Java序列化开销大，不推荐在高性能场景使用"
+        },
+        {
+          "value": "bytes",
+          "description": "字节数组 - 存储二进制数据",
+          "performance_note": "大二进制对象（如文件）严重影响性能，应使用外部存储"
+        }
+      ],
+      "usage_hint": "性能分析时，重点关注json、serializable、bytes类型的变量，这些类型的序列化开销最大"
+    },
+    {
+      "name": "value",
+      "type": "varchar(4000)",
+      "nullable": true,
+      "description": "变量值",
+      "business_meaning": "变量的实际数据内容，以字符串形式存储（最大4000字符）",
+      "indexed": false,
+      "usage_hint": "性能分析时，统计value长度分布可以识别大字段变量。如果value长度接近4000，可能被截断，实际数据存储在value_id指向的位置"
+    },
+    {
+      "name": "value_id",
+      "type": "varchar(256)",
+      "nullable": true,
+      "description": "大对象值引用ID",
+      "business_meaning": "当变量值超过4000字符或需要外部存储时，此字段记录外部存储的引用ID（如Flowable的ACT_GE_BYTEARRAY表的ID）",
+      "indexed": false,
+      "usage_hint": "value_id不为NULL说明变量使用了外部存储，通常意味着数据量较大，可能对性能有影响"
+    },
+    {
+      "name": "create_time",
+      "type": "timestamp",
+      "nullable": false,
+      "default": "now()",
+      "description": "变量创建时间",
+      "business_meaning": "变量首次创建的时间戳",
+      "indexed": true,
+      "usage_hint": "用于追踪变量的生命周期，分析变量创建的时间分布"
+    },
+    {
+      "name": "update_time",
+      "type": "timestamp",
+      "nullable": false,
+      "default": "now()",
+      "description": "变量更新时间",
+      "business_meaning": "变量最后一次更新的时间戳",
+      "indexed": false,
+      "usage_hint": "对比create_time和update_time，可以识别频繁修改的变量（可能影响性能）"
+    },
+    {
+      "name": "tenant_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "租户ID",
+      "business_meaning": "多租户环境下的租户标识，用于数据隔离",
+      "indexed": false,
+      "usage_hint": "查询时必须添加tenant_id过滤条件，确保数据安全"
+    },
+    {
+      "name": "act_inst_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "活动实例ID",
+      "business_meaning": "如果变量是活动级变量（局部变量），此字段关联到pe_ext_actinst表的id；如果为NULL，表示流程级变量",
+      "indexed": false,
+      "foreign_key": {
+        "table": "pe_ext_actinst",
+        "column": "id",
+        "relationship": "many_to_one"
+      },
+      "usage_hint": "通过act_inst_id可以分析特定活动节点使用的变量，识别哪些活动处理了大量数据"
+    }
+  ],
+  "relationships": [
+    {
+      "type": "many_to_one",
+      "target_table": "pe_ext_procinst",
+      "foreign_key": "proc_inst_id",
+      "target_column": "id",
+      "description": "一个流程实例包含多个变量实例",
+      "join_example": "LEFT JOIN pe_ext_procinst p ON v.proc_inst_id = p.id"
+    },
+    {
+      "type": "many_to_one",
+      "target_table": "pe_ext_actinst",
+      "foreign_key": "act_inst_id",
+      "target_column": "id",
+      "description": "活动级变量关联到活动实例（act_inst_id为NULL表示流程级变量）",
+      "join_example": "LEFT JOIN pe_ext_actinst a ON v.act_inst_id = a.id"
+    }
+  ],
+  "common_queries": [
+    {
+      "description": "统计各流程定义的平均变量数量",
+      "business_scenario": "识别哪些流程使用了过多的变量，可能导致性能问题",
+      "sql": "SELECT \n  SPLIT_PART(p.proc_def_id, ':', 1) as process_key,\n  COUNT(DISTINCT p.id) as process_instance_count,\n  COUNT(v.id) as total_variables,\n  ROUND(((COUNT(v.id))::numeric / NULLIF((COUNT(DISTINCT p.id))::numeric, 0)), 2) as avg_variables_per_instance\nFROM pe_ext_procinst p\nLEFT JOIN pe_ext_varinst v ON p.id = v.proc_inst_id\nWHERE p.start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n  AND p.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\nGROUP BY SPLIT_PART(p.proc_def_id, ':', 1)\nHAVING COUNT(DISTINCT p.id) > 10\nORDER BY avg_variables_per_instance DESC\nLIMIT 20;",
+      "optimization_hints": [
+        "使用索引：pe_idx_ext_varinst_proc_inst_id, pe_idx_ext_procinst_start_time",
+        "过多的变量会增加内存开销和序列化成本",
+        "建议每个流程实例的变量数量控制在50个以内"
+      ]
+    },
+    {
+      "description": "查询大字段变量及其对流程性能的影响",
+      "business_scenario": "识别哪些变量因数据量过大导致性能问题",
+      "sql": "SELECT \n  v.name as variable_name,\n  v.type as variable_type,\n  v.category,\n  COUNT(DISTINCT v.proc_inst_id) as affected_process_count,\n  ROUND((AVG(LENGTH(v.value)))::numeric, 2) as avg_value_length,\n  ROUND((MAX(LENGTH(v.value)))::numeric, 2) as max_value_length,\n  COUNT(CASE WHEN v.value_id IS NOT NULL THEN 1 END) as external_storage_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as avg_process_duration_seconds\nFROM pe_ext_varinst v\nINNER JOIN pe_ext_procinst p ON v.proc_inst_id = p.id\nWHERE v.create_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n  AND p.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n  AND p.end_time IS NOT NULL\n  AND (LENGTH(v.value) > 1000 OR v.value_id IS NOT NULL)\nGROUP BY v.name, v.type, v.category\nHAVING COUNT(DISTINCT v.proc_inst_id) > 5\nORDER BY avg_value_length DESC\nLIMIT 20;",
+      "optimization_hints": [
+        "使用索引：pe_idx_ext_varinst_create_time, pe_idx_ext_varinst_proc_inst_id",
+        "value长度>1000或value_id不为NULL说明是大字段变量",
+        "结合avg_process_duration判断大字段变量对性能的影响",
+        "建议将大数据（如文件、大JSON）存储在外部系统，流程中仅保存引用"
+      ]
+    },
+    {
+      "description": "按变量类型统计序列化性能开销",
+      "business_scenario": "评估不同数据类型对流程性能的影响",
+      "sql": "SELECT \n  v.type as variable_type,\n  COUNT(v.id) as variable_count,\n  ROUND((AVG(LENGTH(v.value)))::numeric, 2) as avg_size_bytes,\n  COUNT(DISTINCT v.proc_inst_id) as process_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as avg_process_duration_seconds\nFROM pe_ext_varinst v\nINNER JOIN pe_ext_procinst p ON v.proc_inst_id = p.id\nWHERE v.create_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n  AND p.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n  AND p.end_time IS NOT NULL\n  AND v.type IS NOT NULL\nGROUP BY v.type\nHAVING COUNT(v.id) > 100\nORDER BY avg_process_duration_seconds DESC;",
+      "optimization_hints": [
+        "json和serializable类型的序列化开销最大，应优先优化",
+        "基本类型（integer, boolean, string）性能最好",
+        "如果发现某类型变量频繁使用且流程执行慢，考虑优化数据结构或使用更高效的类型"
+      ]
+    },
+    {
+      "description": "查询特定变量名与流程性能的关联",
+      "business_scenario": "识别哪些业务数据（变量）导致流程变慢",
+      "sql": "WITH variable_stats AS (\n  SELECT \n    v.name,\n    v.proc_inst_id,\n    LENGTH(v.value) as value_length\n  FROM pe_ext_varinst v\n  WHERE v.create_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n    AND v.name IN ('orderId', 'productData', 'customerInfo', 'attachments')\n)\nSELECT \n  vs.name as variable_name,\n  COUNT(DISTINCT p.id) as process_count,\n  ROUND((AVG(vs.value_length))::numeric, 2) as avg_value_length,\n  ROUND((AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as avg_duration_seconds,\n  ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as p95_duration\nFROM variable_stats vs\nINNER JOIN pe_ext_procinst p ON vs.proc_inst_id = p.id\nWHERE p.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n  AND p.end_time IS NOT NULL\nGROUP BY vs.name\nORDER BY avg_duration_seconds DESC;",
+      "optimization_hints": [
+        "使用索引：pe_idx_ext_varinst_name, pe_idx_ext_varinst_proc_inst_id",
+        "需要根据实际业务调整IN子句中的变量名列表",
+        "对比不同变量名对应的流程执行时间，识别性能敏感的业务数据"
+      ]
+    },
+    {
+      "description": "统计Input vs Output变量的数量和大小差异",
+      "business_scenario": "评估流程的输入输出数据量，识别数据膨胀问题",
+      "sql": "SELECT \n  SPLIT_PART(p.proc_def_id, ':', 1) as process_key,\n  COUNT(DISTINCT p.id) as process_count,\n  COUNT(CASE WHEN v.category = 'Input' THEN 1 END) as input_variable_count,\n  COUNT(CASE WHEN v.category = 'Output' THEN 1 END) as output_variable_count,\n  ROUND((AVG(CASE WHEN v.category = 'Input' THEN LENGTH(v.value) END))::numeric, 2) as avg_input_size,\n  ROUND((AVG(CASE WHEN v.category = 'Output' THEN LENGTH(v.value) END))::numeric, 2) as avg_output_size,\n  ROUND((AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as avg_duration_seconds\nFROM pe_ext_procinst p\nLEFT JOIN pe_ext_varinst v ON p.id = v.proc_inst_id\nWHERE p.start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n  AND p.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n  AND p.end_time IS NOT NULL\nGROUP BY SPLIT_PART(p.proc_def_id, ':', 1)\nHAVING COUNT(DISTINCT p.id) > 10\nORDER BY avg_duration_seconds DESC\nLIMIT 20;",
+      "optimization_hints": [
+        "如果输出变量数量或大小远大于输入，说明流程产生了大量中间数据，可能影响性能",
+        "建议流程只保存必要的输出数据，中间结果应及时清理",
+        "对比Input和Output的平均大小，评估数据传输和序列化开销"
+      ]
+    },
+    {
+      "description": "查询频繁更新的变量（可能影响性能）",
+      "business_scenario": "识别在流程执行过程中被反复修改的变量",
+      "sql": "SELECT \n  v.name as variable_name,\n  v.type,\n  COUNT(DISTINCT v.proc_inst_id) as process_count,\n  COUNT(v.id) as total_updates,\n  ROUND(((COUNT(v.id))::numeric / NULLIF((COUNT(DISTINCT v.proc_inst_id))::numeric, 0)), 2) as avg_updates_per_process,\n  ROUND((AVG(EXTRACT(EPOCH FROM (v.update_time - v.create_time))))::numeric, 2) as avg_update_delay_seconds\nFROM pe_ext_varinst v\nWHERE v.create_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n  AND v.update_time > v.create_time + INTERVAL '1 second'\nGROUP BY v.name, v.type\nHAVING COUNT(v.id) > 50 AND COUNT(DISTINCT v.proc_inst_id) > 5\nORDER BY avg_updates_per_process DESC\nLIMIT 20;",
+      "optimization_hints": [
+        "频繁更新的变量会导致多次序列化和数据库写入，影响性能",
+        "avg_updates_per_process > 5 说明变量在流程中被多次修改",
+        "考虑优化流程设计，减少不必要的变量更新"
+      ]
+    },
+    {
+      "description": "分析活动级变量vs流程级变量的使用情况",
+      "business_scenario": "评估变量作用域设计是否合理",
+      "sql": "SELECT \n  CASE WHEN v.act_inst_id IS NULL THEN 'Process Level' ELSE 'Activity Level' END as variable_scope,\n  COUNT(v.id) as variable_count,\n  COUNT(DISTINCT v.proc_inst_id) as process_count,\n  ROUND((AVG(LENGTH(v.value)))::numeric, 2) as avg_size_bytes,\n  COUNT(DISTINCT v.name) as unique_variable_names\nFROM pe_ext_varinst v\nWHERE v.create_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\nGROUP BY CASE WHEN v.act_inst_id IS NULL THEN 'Process Level' ELSE 'Activity Level' END;",
+      "optimization_hints": [
+        "流程级变量生命周期长，会一直占用内存",
+        "活动级变量生命周期短，活动完成后可以释放",
+        "如果流程级变量过多，考虑将部分变量改为活动级变量以减少内存占用"
+      ]
+    },
+    {
+      "description": "查询使用外部存储的变量统计",
+      "business_scenario": "识别需要外部存储的大对象变量",
+      "sql": "SELECT \n  v.name as variable_name,\n  v.type,\n  v.category,\n  COUNT(v.id) as external_storage_count,\n  COUNT(DISTINCT v.proc_inst_id) as affected_process_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as avg_process_duration_seconds\nFROM pe_ext_varinst v\nINNER JOIN pe_ext_procinst p ON v.proc_inst_id = p.id\nWHERE v.create_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n  AND v.value_id IS NOT NULL\n  AND p.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n  AND p.end_time IS NOT NULL\nGROUP BY v.name, v.type, v.category\nHAVING COUNT(v.id) > 5\nORDER BY external_storage_count DESC;",
+      "optimization_hints": [
+        "value_id不为NULL说明变量使用了Flowable的字节数组存储（ACT_GE_BYTEARRAY）",
+        "这些变量通常是大对象（如文件、大JSON），会显著影响性能",
+        "建议将这些数据移到外部存储系统（如OSS、S3），流程中仅保存URL引用"
+      ]
+    }
+  ],
+  "performance_optimization_tips": [
+    "变量表数据量最大，查询时务必添加proc_inst_id或create_time过滤条件，利用索引",
+    "按变量名查询时使用name索引，避免全表扫描",
+    "统计变量数量时，注意区分流程级变量（act_inst_id为NULL）和活动级变量",
+    "大字段变量（value长度>1000或value_id不为NULL）应重点关注，这些变量显著影响性能",
+    "json和serializable类型的序列化开销最大，应优先优化或改用string类型存储",
+    "建议每个流程实例的变量数量控制在50个以内，过多变量会增加内存和序列化成本",
+    "频繁更新的变量（update_time - create_time较短且次数多）应该优化流程设计，减少不必要的更新",
+    "流程级变量的生命周期长，应尽量使用活动级变量减少内存占用",
+    "value字段最大4000字符，如果需要存储更大数据，会使用value_id指向外部存储",
+    "分析Input和Output变量的数量和大小差异，可以识别数据膨胀问题",
+    "JOIN pe_ext_procinst表时，优先使用proc_inst_id索引",
+    "统计变量使用频率时，使用COUNT(DISTINCT name)计算唯一变量名数量"
+  ],
+  "data_quality_notes": [
+    "如果proc_inst_id不为NULL但在pe_ext_procinst表中找不到对应记录，说明流程已被清理（数据完整性问题）",
+    "如果act_inst_id不为NULL但在pe_ext_actinst表中找不到对应记录，说明活动已被清理",
+    "value为NULL且value_id也为NULL说明变量值未设置或为空值",
+    "如果value长度接近4000且value_id为NULL，可能发生了数据截断",
+    "type为NULL的记录可能是历史遗留数据，应视为string类型",
+    "category为NULL的记录通常是流程级变量（默认PV类型）",
+    "create_time应该早于或等于update_time，否则说明时间戳记录错误",
+    "同一流程实例的变量create_time应该在该流程的start_time和end_time之间"
+  ],
+"ai_analysis_guidelines": [
+    "生成SQL时，默认添加tenant_id和时间范围过滤（create_time >= ...），避免全表扫描",
+    "查询特定流程的变量时，使用proc_inst_id = ... （有索引）",
+    "计算变量大小使用LENGTH(value)函数",
+    "判断是否使用外部存储：value_id IS NOT NULL",
+    "判断是否为大字段变量：LENGTH(value) > 1000 OR value_id IS NOT NULL",
+    "【CRITICAL - 致命语法规则】PostgreSQL 对 ROUND(value, scale) 的类型校验极度严格！AVG 返回 double precision，直接套用 ROUND 会导致数据库报错！",
+    "【CRITICAL - ROUND语法强制要求】只要使用带小数的 ROUND 函数，内部整个聚合或除法表达式【必须】用括号包裹并强转为 ::numeric！",
+    "❌ 绝对禁止的错误写法（除法计算）：ROUND(COUNT(id) / COUNT(DISTINCT proc_inst_id), 2)",
+    "✅ 必须使用的正确写法（除法计算）：ROUND(((COUNT(id))::numeric / NULLIF((COUNT(DISTINCT proc_inst_id))::numeric, 0)), 2)",
+    "❌ 绝对禁止的错误写法（AVG计算）：ROUND(AVG(LENGTH(value)), 2)",
+    "✅ 必须使用的正确写法（AVG计算）：ROUND((AVG(LENGTH(value)))::numeric, 2)",
+    "区分流程级和活动级变量：act_inst_id IS NULL（流程级）vs act_inst_id IS NOT NULL（活动级）",
+    "统计变量数量时，使用COUNT(v.id)而非COUNT(*)以避免NULL值干扰",
+    "分析变量类型性能影响时，应分别统计不同type的序列化开销",
+    "变量表数据量大，聚合查询时建议添加HAVING子句过滤低频数据"
+  ],
+  "performance_analysis_use_cases": [
+    {
+      "use_case": "识别数据驱动的性能问题",
+      "description": "某些流程因为处理大量数据（大字段变量）导致执行缓慢",
+      "analysis_approach": "统计变量大小（LENGTH(value)）与流程执行时间的相关性，找出大字段变量对性能的影响"
+    },
+    {
+      "use_case": "评估序列化开销",
+      "description": "不同变量类型的序列化性能差异",
+      "analysis_approach": "按type分组统计流程平均执行时间，对比json、serializable与基本类型的性能差异"
+    },
+    {
+      "use_case": "优化变量使用策略",
+      "description": "流程使用了过多的变量导致内存和序列化开销大",
+      "analysis_approach": "统计每个流程的变量数量，识别变量数量过多的流程（如>50个），建议优化变量设计"
+    },
+    {
+      "use_case": "识别输入输出数据膨胀",
+      "description": "流程产生的输出数据远大于输入数据",
+      "analysis_approach": "对比Input和Output类型变量的数量和大小，识别数据膨胀问题"
+    },
+    {
+      "use_case": "分析业务数据与性能的关系",
+      "description": "特定业务数据（如订单类型、客户等级）影响流程性能",
+      "analysis_approach": "通过变量名（name）筛选业务相关变量，分析其值与流程执行时间的关系"
+    }
+  ]
+}

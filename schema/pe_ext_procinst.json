@@ -1,0 +1,536 @@
+{
+  "table_name": "pe_ext_procinst",
+  "description": "流程引擎流程实例扩展表，记录每个BPMN流程实例的完整生命周期信息",
+  "business_context": "这是性能分析的最核心表。每条记录代表一次完整的流程执行（从开始到结束）。通过分析流程实例的整体执行时间、状态和触发方式，可以从宏观角度识别性能问题和系统瓶颈。与pe_ext_actinst表结合使用，可以定位到具体环节的性能瓶颈。",
+  "row_count_estimate": "通常与业务量成正比，每次流程启动产生一条记录",
+  "primary_key": "id",
+  "indexes": [
+    {
+      "name": "PE_EXT_PROCINST_pkey",
+      "type": "PRIMARY KEY",
+      "columns": [
+        "id"
+      ],
+      "description": "主键索引"
+    },
+    {
+      "name": "pe_idx_ext_procinst_start_time",
+      "type": "BTREE",
+      "columns": [
+        "start_time"
+      ],
+      "description": "开始时间索引，用于按时间范围高效过滤，性能分析中最常用的索引"
+    },
+    {
+      "name": "pe_idx_ext_procinst_end_time",
+      "type": "BTREE",
+      "columns": [
+        "end_time"
+      ],
+      "description": "结束时间索引，支持按完成时间范围查询"
+    },
+    {
+      "name": "pe_idx_ext_procinst_parent_inst_id",
+      "type": "BTREE",
+      "columns": [
+        "parent_inst_id"
+      ],
+      "description": "父流程实例ID索引，用于查询子流程或追踪流程层级关系"
+    },
+    {
+      "name": "pe_idx_ext_procinst_root_inst_id",
+      "type": "BTREE",
+      "columns": [
+        "root_inst_id"
+      ],
+      "description": "根流程实例ID索引，用于聚合整个流程树的执行情况"
+    }
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "type": "varchar(255)",
+      "nullable": false,
+      "description": "流程实例唯一标识符（主键）",
+      "business_meaning": "每次流程启动都会生成一个唯一的实例ID，对应Flowable引擎的ProcessInstanceId",
+      "indexed": true,
+      "sample_values": [
+        "proc_inst_001",
+        "proc_inst_002"
+      ]
+    },
+    {
+      "name": "parent_inst_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "父流程实例ID",
+      "business_meaning": "如果当前流程是子流程（被callActivity调用），此字段指向调用它的父流程实例ID；顶层流程此字段为NULL",
+      "indexed": true,
+      "foreign_key": {
+        "table": "pe_ext_procinst",
+        "column": "id",
+        "relationship": "self_reference"
+      },
+      "usage_hint": "用于构建流程层级树，分析子流程对整体性能的影响。通过递归查询parent_inst_id可以追溯到根流程"
+    },
+    {
+      "name": "root_inst_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "根流程实例ID",
+      "business_meaning": "流程调用树的最顶层流程实例ID；对于顶层流程，root_inst_id = id；对于子流程，root_inst_id指向最上层的父流程",
+      "indexed": true,
+      "foreign_key": {
+        "table": "pe_ext_procinst",
+        "column": "id",
+        "relationship": "self_reference"
+      },
+      "usage_hint": "性能分析时，可以通过root_inst_id聚合整个流程树的总耗时，避免递归查询parent_inst_id"
+    },
+    {
+      "name": "proc_def_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "流程定义ID",
+      "business_meaning": "BPMN流程定义的唯一标识（如'OrderProcess:1:abc123'），包含流程Key、版本号和部署ID",
+      "indexed": false,
+      "usage_hint": "性能分析的关键维度，用于对比不同流程定义的性能表现。通常提取流程Key部分进行分组统计（去掉版本号和部署ID）"
+    },
+    {
+      "name": "proc_inst_name",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "流程实例名称",
+      "business_meaning": "用户定义的流程实例可读名称（如'订单#12345的审批流程'），比proc_def_id更易理解",
+      "indexed": false,
+      "usage_hint": "性能报告中优先显示此名称，帮助用户快速识别具体业务场景"
+    },
+    {
+      "name": "status",
+      "type": "varchar(32)",
+      "nullable": true,
+      "description": "流程状态",
+      "business_meaning": "流程的当前执行状态或最终状态，用于UI监控显示和性能统计",
+      "indexed": false,
+      "possible_values": [
+        {
+          "value": "COMPLETED",
+          "description": "已完成 - 流程正常执行完成（到达结束事件）",
+          "priority": 1,
+          "performance_note": "性能分析的主要目标，统计正常完成的流程执行时长"
+        },
+        {
+          "value": "COMPLETED_WITH_ERROR",
+          "description": "完成但有错误 - 流程虽然到达结束事件但过程中捕获了业务错误",
+          "priority": 2,
+          "performance_note": "需要关注，可能因错误处理或重试导致执行时间偏长"
+        },
+        {
+          "value": "RUNNING",
+          "description": "运行中 - 流程正在执行",
+          "priority": 4,
+          "performance_note": "性能分析时应排除此状态（end_time为NULL），避免统计未完成的记录"
+        },
+        {
+          "value": "RUNNING_WAITING",
+          "description": "运行等待中 - 等待外部事件或用户操作（如用户任务）",
+          "priority": 3,
+          "performance_note": "长时间处于此状态说明流程设计存在问题（如审批环节过多）"
+        },
+        {
+          "value": "RUNNING_DEBUG",
+          "description": "调试模式运行 - 流程处于断点调试状态",
+          "priority": 5,
+          "performance_note": "性能分析时必须排除此状态，调试会人为拉长执行时间"
+        },
+        {
+          "value": "FAILED",
+          "description": "失败 - 流程执行失败（未捕获的异常导致流程终止）",
+          "priority": 6,
+          "performance_note": "失败流程往往耗时异常，需要单独分析失败原因和失败率"
+        },
+        {
+          "value": "TERMINATED",
+          "description": "已终止 - 流程被人工终止",
+          "priority": 7,
+          "performance_note": "性能分析时通常排除，因为非正常结束"
+        },
+        {
+          "value": "TERMINATED_SYSTEM",
+          "description": "系统终止 - 由系统自动终止（如超时保护机制）",
+          "priority": 8,
+          "performance_note": "说明流程执行时间过长触发系统保护，需要重点优化"
+        }
+      ],
+      "usage_hint": "性能分析标准过滤条件：status IN ('COMPLETED', 'COMPLETED_WITH_ERROR') AND end_time IS NOT NULL"
+    },
+    {
+      "name": "sub_status",
+      "type": "varchar(32)",
+      "nullable": true,
+      "description": "流程子状态",
+      "business_meaning": "对status的补充说明，主要用于调试状态和子流程状态的细粒度标识",
+      "indexed": false,
+      "possible_values": [
+        {
+          "value": "BREAKING",
+          "description": "断点中 - 流程在调试断点处暂停"
+        },
+        {
+          "value": "SUB_BREAKING",
+          "description": "子流程断点中 - 子流程在断点处暂停"
+        },
+        {
+          "value": "RUNNING",
+          "description": "正常运行"
+        },
+        {
+          "value": "SUB_RUNNING",
+          "description": "子流程运行中"
+        },
+        {
+          "value": "FAILED",
+          "description": "失败"
+        },
+        {
+          "value": "SUB_FAILED",
+          "description": "子流程失败"
+        }
+      ],
+      "usage_hint": "性能分析时排除调试相关的sub_status：sub_status NOT IN ('BREAKING', 'SUB_BREAKING', 'RUNNING_DEBUG')"
+    },
+    {
+      "name": "source_name",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "触发源名称",
+      "business_meaning": "触发此流程启动的业务对象或实体名称（如'Order#12345', 'WorkOrder#WO001'）",
+      "indexed": false,
+      "usage_hint": "结合source_type使用，可以按触发源维度分析性能（如'订单流程'vs'工单流程'的性能对比）"
+    },
+    {
+      "name": "source_type",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "触发源类型",
+      "business_meaning": "触发此流程启动的业务对象类型（如'Order', 'WorkOrder', 'Material'）",
+      "indexed": false,
+      "possible_values": [
+        {
+          "value": "Order",
+          "description": "订单触发"
+        },
+        {
+          "value": "WorkOrder",
+          "description": "工单触发"
+        },
+        {
+          "value": "Material",
+          "description": "物料触发"
+        },
+        {
+          "value": "API",
+          "description": "API调用触发"
+        },
+        {
+          "value": "Timer",
+          "description": "定时任务触发"
+        },
+        {
+          "value": "Message",
+          "description": "消息事件触发"
+        }
+      ],
+      "usage_hint": "按source_type分组统计，可以识别哪种业务场景的流程性能最差"
+    },
+    {
+      "name": "trigger_mode",
+      "type": "integer",
+      "nullable": true,
+      "description": "触发模式",
+      "business_meaning": "流程的执行模式，决定了流程是同步执行还是异步执行",
+      "indexed": false,
+      "possible_values": [
+        {
+          "value": 0,
+          "description": "异步模式（Async） - 流程启动后立即返回，在后台异步执行",
+          "performance_note": "异步模式不阻塞调用方，但整体执行时间可能更长（需要排队等待）"
+        },
+        {
+          "value": 1,
+          "description": "同步模式（Sync） - 流程启动后阻塞等待执行完成",
+          "performance_note": "同步模式直接影响用户体验，执行时间敏感，是性能优化的重点"
+        }
+      ],
+      "usage_hint": "分别统计同步和异步模式的性能，两者不应直接对比（异步模式包含排队时间）"
+    },
+    {
+      "name": "log_level",
+      "type": "varchar(32)",
+      "nullable": true,
+      "description": "日志级别",
+      "business_meaning": "流程实例的日志记录级别，控制执行过程中日志的详细程度",
+      "indexed": false,
+      "possible_values": [
+        {
+          "value": "Debug",
+          "description": "调试级别 - 记录最详细的日志（包括变量值、步骤详情等）",
+          "performance_note": "Debug级别的日志会显著增加I/O开销，可能影响性能"
+        },
+        {
+          "value": "Info",
+          "description": "信息级别 - 记录关键步骤和状态变更",
+          "performance_note": "正常性能开销"
+        },
+        {
+          "value": "Error",
+          "description": "错误级别 - 仅记录错误信息",
+          "performance_note": "最小性能开销"
+        },
+        {
+          "value": "None",
+          "description": "无日志 - 不记录执行日志（仅保留流程状态）",
+          "performance_note": "无日志开销，性能最优"
+        }
+      ],
+      "usage_hint": "性能分析时，可以对比不同log_level的执行时间，评估日志记录的性能影响"
+    },
+    {
+      "name": "start_time",
+      "type": "timestamp",
+      "nullable": true,
+      "description": "流程开始时间",
+      "business_meaning": "流程实例启动的时间戳（对应BPMN startEvent触发时刻）",
+      "indexed": true,
+      "usage_hint": "性能分析的核心字段，用于：1) 计算流程执行时长（end_time - start_time）；2) 时间范围过滤（最常用索引）；3) 时间段性能趋势分析"
+    },
+    {
+      "name": "end_time",
+      "type": "timestamp",
+      "nullable": true,
+      "description": "流程结束时间",
+      "business_meaning": "流程实例结束的时间戳（到达endEvent或异常终止），如果为NULL表示流程仍在运行中",
+      "indexed": true,
+      "usage_hint": "查询历史性能数据时必须过滤end_time IS NOT NULL，否则会包含未完成的流程导致统计错误。也可用于分析流程完成时间分布"
+    },
+    {
+      "name": "create_time",
+      "type": "timestamp",
+      "nullable": false,
+      "default": "now()",
+      "description": "记录创建时间",
+      "business_meaning": "数据库记录插入时间，由Hibernate自动生成（@CreationTimestamp）",
+      "indexed": false,
+      "usage_hint": "通常等于start_time，性能分析中较少使用，主要用于数据审计"
+    },
+    {
+      "name": "update_time",
+      "type": "timestamp",
+      "nullable": false,
+      "default": "now()",
+      "description": "记录更新时间",
+      "business_meaning": "数据库记录最后更新时间，由Hibernate自动维护（@UpdateTimestamp）",
+      "indexed": false,
+      "usage_hint": "通常等于end_time，性能分析中较少使用，主要用于数据审计"
+    },
+    {
+      "name": "tenant_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "租户ID",
+      "business_meaning": "多租户环境下的租户标识，用于数据隔离和资源分配",
+      "indexed": false,
+      "usage_hint": "查询时必须添加tenant_id过滤条件，确保数据安全。性能分析时也可以按租户维度对比不同租户的负载和性能"
+    },
+    {
+      "name": "call_act_inst_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "调用活动实例ID",
+      "business_meaning": "如果当前流程是子流程，此字段记录父流程中callActivity活动的实例ID，可关联到pe_ext_actinst.id",
+      "indexed": false,
+      "foreign_key": {
+        "table": "pe_ext_actinst",
+        "column": "id",
+        "relationship": "many_to_one"
+      },
+      "usage_hint": "分析子流程性能时，JOIN pe_ext_actinst表可以获取callActivity的执行上下文（如调用时机、父流程信息）"
+    },
+    {
+      "name": "error_message",
+      "type": "varchar(4000)",
+      "nullable": true,
+      "description": "错误信息详情",
+      "business_meaning": "流程执行失败时的错误堆栈或详细描述，最大4000字符",
+      "indexed": false,
+      "usage_hint": "性能分析时，统计高频错误信息可以识别系统性问题（如特定服务频繁超时、数据库连接池耗尽等）"
+    },
+    {
+      "name": "error_message_id",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "错误信息标识符",
+      "business_meaning": "错误的分类代码或ID（如'TIMEOUT_ERROR', 'DB_CONNECTION_ERROR'），用于归类相同类型的错误",
+      "indexed": false,
+      "usage_hint": "按error_message_id分组统计失败率，比直接分析error_message更高效。可以构建错误知识库"
+    }
+  ],
+  "relationships": [
+    {
+      "type": "one_to_many",
+      "target_table": "pe_ext_actinst",
+      "foreign_key_in_target": "proc_inst_id",
+      "target_column": "id",
+      "description": "一个流程实例包含多个活动实例",
+      "join_example": "LEFT JOIN pe_ext_actinst a ON p.id = a.proc_inst_id",
+      "performance_note": "这是最常用的JOIN，用于钻取到流程内部的活动级别性能瓶颈"
+    },
+    {
+      "type": "self_reference",
+      "foreign_key": "parent_inst_id",
+      "target_column": "id",
+      "description": "父子流程关系（子流程指向父流程）",
+      "join_example": "LEFT JOIN pe_ext_procinst parent ON child.parent_inst_id = parent.id",
+      "performance_note": "用于分析流程层级对性能的影响，通过递归查询可以构建完整的调用树"
+    },
+    {
+      "type": "self_reference",
+      "foreign_key": "root_inst_id",
+      "target_column": "id",
+      "description": "根流程关系（所有子流程指向根流程）",
+      "join_example": "LEFT JOIN pe_ext_procinst root ON p.root_inst_id = root.id",
+      "performance_note": "用于聚合整个流程树的总耗时，避免递归查询parent_inst_id"
+    },
+    {
+      "type": "many_to_one",
+      "target_table": "pe_ext_actinst",
+      "foreign_key": "call_act_inst_id",
+      "target_column": "id",
+      "description": "子流程关联到父流程中的callActivity活动",
+      "join_example": "LEFT JOIN pe_ext_actinst call_act ON sub.call_act_inst_id = call_act.id",
+      "performance_note": "用于分析callActivity的调用开销（callActivity耗时 vs 子流程耗时的差异）"
+    }
+  ],
+  "common_queries": [
+    {
+      "description": "查询最慢的10个流程定义（按平均执行时间）",
+      "business_scenario": "识别哪些流程定义需要优先优化",
+      "sql": "SELECT \n  SPLIT_PART(proc_def_id, ':', 1) as process_key,\n  COUNT(*) as execution_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as avg_duration_seconds,\n  ROUND((PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as p50_duration,\n  ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as p95_duration,\n  ROUND((MAX(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as max_duration_seconds\nFROM pe_ext_procinst\nWHERE status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n  AND end_time IS NOT NULL\n  AND start_time IS NOT NULL\n  AND start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\nGROUP BY SPLIT_PART(proc_def_id, ':', 1)\nHAVING COUNT(*) > 10\nORDER BY avg_duration_seconds DESC\nLIMIT 10;",
+      "optimization_hints": [
+        "使用索引：pe_idx_ext_procinst_start_time",
+        "SPLIT_PART提取流程Key（去掉版本号），便于聚合不同版本的数据",
+        "计算P50和P95分位数，避免异常值影响平均值",
+        "HAVING COUNT(*) > 10 过滤低频流程，避免统计误差"
+      ]
+    },
+    {
+      "description": "统计最近7天各流程定义的失败率和性能",
+      "business_scenario": "识别不稳定且性能差的流程",
+      "sql": "SELECT \n  SPLIT_PART(proc_def_id, ':', 1) as process_key,\n  COUNT(*) as total_executions,\n  SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) as failed_count,\n  ROUND((100.0 * SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) / COUNT(*))::numeric, 2) as failure_rate_percent,\n  ROUND((AVG(CASE WHEN status IN ('COMPLETED', 'COMPLETED_WITH_ERROR') THEN EXTRACT(EPOCH FROM (end_time - start_time)) END))::numeric, 2) as avg_success_duration_seconds\nFROM pe_ext_procinst\nWHERE start_time >= CURRENT_TIMESTAMP - INTERVAL '7 days'\nGROUP BY SPLIT_PART(proc_def_id, ':', 1)\nHAVING COUNT(*) > 5\nORDER BY failure_rate_percent DESC, avg_success_duration_seconds DESC;",
+      "optimization_hints": [
+        "使用索引：pe_idx_ext_procinst_start_time",
+        "失败率和平均执行时间结合分析，找到既不稳定又慢的流程",
+        "avg_success_duration_seconds只计算成功完成的流程，避免失败流程的异常耗时影响统计"
+      ]
+    },
+    {
+      "description": "按小时统计流程执行量和平均性能（时间段趋势分析）",
+      "business_scenario": "识别性能高峰时段和低谷时段，评估系统负载对性能的影响",
+      "sql": "SELECT \n  DATE_TRUNC('hour', start_time) as hour_bucket,\n  COUNT(*) as execution_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as avg_duration_seconds,\n  ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as p95_duration\nFROM pe_ext_procinst\nWHERE status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n  AND end_time IS NOT NULL\n  AND start_time >= CURRENT_TIMESTAMP - INTERVAL '7 days'\nGROUP BY DATE_TRUNC('hour', start_time)\nORDER BY hour_bucket DESC;",
+      "optimization_hints": [
+        "使用索引：pe_idx_ext_procinst_start_time",
+        "DATE_TRUNC按小时聚合，可以根据需要改为按天、按周",
+        "对比execution_count和avg_duration，可以发现高并发时段的性能衰减"
+      ]
+    },
+    {
+      "description": "分析同步模式vs异步模式的性能差异",
+      "business_scenario": "评估trigger_mode对性能的影响，指导流程设计决策",
+      "sql": "SELECT \n  CASE trigger_mode \n    WHEN 0 THEN 'Async (异步)'\n    WHEN 1 THEN 'Sync (同步)'\n    ELSE 'Unknown'\n  END as execution_mode,\n  COUNT(*) as execution_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as avg_duration_seconds,\n  ROUND((PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as p50_duration,\n  ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as p95_duration\nFROM pe_ext_procinst\nWHERE status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n  AND end_time IS NOT NULL\n  AND start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n  AND trigger_mode IS NOT NULL\nGROUP BY trigger_mode\nORDER BY trigger_mode;",
+      "optimization_hints": [
+        "异步模式的执行时间包含排队等待时间，不应直接与同步模式对比",
+        "同步模式的P95应作为用户体验优化的重点指标",
+        "如果异步模式的执行时间显著长于同步模式，说明系统存在排队积压"
+      ]
+    },
+    {
+      "description": "查询包含子流程的流程性能（父流程vs子流程对比）",
+      "business_scenario": "分析子流程调用对整体性能的影响",
+      "sql": "SELECT \n  parent.proc_def_id as parent_process,\n  COUNT(DISTINCT parent.id) as parent_execution_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (parent.end_time - parent.start_time))))::numeric, 2) as avg_parent_duration,\n  COUNT(child.id) as total_subprocesses,\n  ROUND((AVG(EXTRACT(EPOCH FROM (child.end_time - child.start_time))))::numeric, 2) as avg_child_duration,\n  ROUND((100.0 * AVG(EXTRACT(EPOCH FROM (child.end_time - child.start_time))) / \n        NULLIF(AVG(EXTRACT(EPOCH FROM (parent.end_time - parent.start_time))), 0))::numeric, 2) as subprocess_time_percentage\nFROM pe_ext_procinst parent\nINNER JOIN pe_ext_procinst child ON child.parent_inst_id = parent.id\nWHERE parent.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n  AND child.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n  AND parent.end_time IS NOT NULL\n  AND child.end_time IS NOT NULL\n  AND parent.start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\nGROUP BY parent.proc_def_id\nHAVING COUNT(DISTINCT parent.id) > 5\nORDER BY subprocess_time_percentage DESC;",
+      "optimization_hints": [
+        "使用索引：pe_idx_ext_procinst_parent_inst_id, pe_idx_ext_procinst_start_time",
+        "subprocess_time_percentage显示子流程占父流程总耗时的比例",
+        "如果比例过高（如>80%），说明父流程的主要时间消耗在子流程调用上"
+      ]
+    },
+    {
+      "description": "查询超时或执行时间异常长的流程实例",
+      "business_scenario": "定位需要重点排查的问题实例",
+      "sql": "SELECT \n  id as process_instance_id,\n  proc_def_id,\n  proc_inst_name,\n  start_time,\n  end_time,\n  (EXTRACT(EPOCH FROM (end_time - start_time)))::numeric as duration_seconds,\n  status,\n  error_message_id,\n  LEFT(error_message, 200) as error_preview\nFROM pe_ext_procinst\nWHERE start_time >= CURRENT_TIMESTAMP - INTERVAL '7 days'\n  AND end_time IS NOT NULL\n  AND (EXTRACT(EPOCH FROM (end_time - start_time)))::numeric > 3600\nORDER BY duration_seconds DESC\nLIMIT 50;",
+      "optimization_hints": [
+        "使用索引：pe_idx_ext_procinst_start_time",
+        "3600秒（1小时）是示例阈值，应根据业务场景调整",
+        "结合error_message分析，判断超时是因为系统问题还是业务逻辑复杂"
+      ]
+    },
+    {
+      "description": "按触发源类型统计流程性能",
+      "business_scenario": "识别哪种业务场景的流程性能最差",
+      "sql": "SELECT \n  source_type,\n  COUNT(*) as execution_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as avg_duration_seconds,\n  ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as p95_duration,\n  SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) as failed_count,\n  ROUND((100.0 * SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) / COUNT(*))::numeric, 2) as failure_rate_percent\nFROM pe_ext_procinst\nWHERE start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n  AND source_type IS NOT NULL\nGROUP BY source_type\nHAVING COUNT(*) > 10\nORDER BY avg_duration_seconds DESC;",
+      "optimization_hints": [
+        "source_type和source_name结合使用，可以追溯到具体的业务对象",
+        "不同业务场景的流程性能标准不同，应分别优化"
+      ]
+    },
+    {
+      "description": "统计日志级别对性能的影响",
+      "business_scenario": "评估日志记录的性能开销，指导日志策略优化",
+      "sql": "SELECT \n  log_level,\n  COUNT(*) as execution_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as avg_duration_seconds,\n  ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as p95_duration\nFROM pe_ext_procinst\nWHERE status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n  AND end_time IS NOT NULL\n  AND start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n  AND log_level IS NOT NULL\nGROUP BY log_level\nORDER BY \n  CASE log_level\n    WHEN 'None' THEN 1\n    WHEN 'Error' THEN 2\n    WHEN 'Info' THEN 3\n    WHEN 'Debug' THEN 4\n  END;",
+      "optimization_hints": [
+        "对比不同log_level的执行时间，量化日志开销",
+        "Debug级别通常会增加10%-30%的执行时间，应仅在排查问题时使用",
+        "生产环境建议使用Error或Info级别"
+      ]
+    }
+  ],
+  "performance_optimization_tips": [
+    "查询时务必添加时间范围过滤（start_time >= ...），利用索引避免全表扫描",
+    "计算执行时长时，必须同时检查end_time IS NOT NULL和start_time IS NOT NULL",
+    "标准过滤条件：status IN ('COMPLETED', 'COMPLETED_WITH_ERROR') AND end_time IS NOT NULL",
+    "排除调试状态：status != 'RUNNING_DEBUG' 或 sub_status NOT IN ('BREAKING', 'SUB_BREAKING')",
+    "使用SPLIT_PART(proc_def_id, ':', 1)提取流程Key，聚合不同版本的数据",
+    "计算分位数（P50, P95）比平均值更能反映真实性能，避免异常值影响",
+    "分析子流程性能时，使用parent_inst_id或root_inst_id索引，避免全表JOIN",
+    "同步模式（trigger_mode=1）的性能直接影响用户体验，应优先优化",
+    "异步模式（trigger_mode=0）的执行时间包含排队等待，不应直接与同步模式对比",
+    "按小时或按天聚合统计，可以发现性能随时间和负载的变化趋势",
+    "结合source_type和proc_def_id双维度分析，可以识别特定业务场景下的性能问题",
+    "log_level为Debug时会显著增加性能开销，生产环境应避免使用"
+  ],
+  "data_quality_notes": [
+    "如果end_time为NULL但status='COMPLETED'，说明数据不一致（可能是系统异常未更新）",
+    "如果执行时长<0（end_time < start_time），说明时间戳记录错误",
+    "如果parent_inst_id不为NULL但在表中找不到对应记录，说明父流程已被清理（数据完整性问题）",
+    "root_inst_id应始终指向一个存在的记录，且该记录的root_inst_id = id（自指）",
+    "对于子流程，call_act_inst_id应该不为NULL，否则无法追溯调用关系",
+    "proc_def_id通常格式为'ProcessKey:Version:DeploymentId'（如'OrderProcess:1:abc123'）",
+    "trigger_mode为NULL的记录可能是历史遗留数据，应视为异步模式（默认值0）"
+  ],
+"ai_analysis_guidelines": [
+    "生成SQL时，默认添加tenant_id过滤（除非用户明确说明跨租户分析）",
+    "时间范围查询优先使用start_time >= ... （有索引），除非用户明确要求按完成时间过滤",
+    "计算执行时长统一使用公式：EXTRACT(EPOCH FROM (end_time - start_time))",
+    "标准过滤条件：status IN ('COMPLETED', 'COMPLETED_WITH_ERROR') AND end_time IS NOT NULL AND start_time IS NOT NULL",
+    "【CRITICAL - 致命语法规则】PostgreSQL 对 ROUND(value, scale) 的类型校验极度严格！EXTRACT 和 AVG 默认返回 double precision，直接套用 ROUND 会报错 function round(double precision, integer) does not exist！",
+    "【CRITICAL - ROUND语法强制要求】只要使用带小数的 ROUND 函数，内部整个聚合表达式【必须】用括号包裹并强转为 ::numeric！",
+    "❌ 绝对禁止的错误写法（会导致PG数据库崩溃）：ROUND(AVG(EXTRACT(EPOCH FROM (end_time - start_time))), 2)",
+    "✅ 必须使用的正确写法：ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2)",
+    "✅ 通用安全强转公式：ROUND((任何聚合表达式)::numeric, 2)",
+    "聚合查询时，建议添加HAVING COUNT(*) > N过滤低频数据（N根据时间范围选择，7天用5，30天用10）",
+    "结果排序优先使用业务指标（avg_duration, p95_duration, failure_rate），而非记录数量",
+    "使用SPLIT_PART(proc_def_id, ':', 1)提取流程Key，避免版本号干扰聚合结果",
+    "计算分位数使用PERCENTILE_CONT，且同样遵循强转规则：ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (...))::numeric, 2)",
+    "JOIN子流程时使用LEFT JOIN，确保父流程数据不丢失（子流程可能已被清理）",
+    "提供性能建议时，应区分流程设计问题（如子流程过多）和系统问题（如服务响应慢）"
+  ]
+}
