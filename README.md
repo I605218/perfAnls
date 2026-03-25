@@ -1,22 +1,5 @@
 # Process Engine Performance Analyzer
 
-基于 AI 的流程引擎性能分析工具，用于分析 SAP Digital Manufacturing Cloud Process Engine 的性能数据。
-
-## 🎯 功能特性
-
-- ✅ **Top K 最慢流程分析** - 识别执行时间最长的流程实例
-- ✅ **最频繁运行流程分析** - 统计运行次数最多的流程定义
-- ✅ **AI 深度分析** - 使用 Claude AI 提供性能洞察和优化建议
-- ✅ **自动生成 API 文档** - Swagger UI 和 ReDoc
-
-## 🏗️ 技术栈
-
-- **后端框架**: FastAPI 0.115+
-- **数据库**: PostgreSQL 9.6+
-- **AI**: Claude Sonnet 4.6 (Anthropic)
-- **Python**: 3.11+
-- **数据分析**: pandas, numpy
-
 ## 📦 快速开始
 
 ### 1. 环境准备
@@ -100,39 +83,6 @@ python -m app.main
 | GET | `/api/v1/analysis/health` | 健康检查 |
 | GET | `/api/v1/analysis/stats/summary` | 数据库统计摘要 |
 
-### 使用示例
-
-#### 1. 查询 Top 10 最慢流程（最近7天）
-
-```bash
-curl "http://localhost:8000/api/v1/analysis/top-slowest?k=10"
-```
-
-#### 2. 查询指定时间范围的最慢流程
-
-```bash
-curl "http://localhost:8000/api/v1/analysis/top-slowest?k=5&start_time=2026-03-01T00:00:00&end_time=2026-03-23T23:59:59"
-```
-
-#### 3. 查询最频繁运行的流程（最近30天）
-
-```bash
-# 注意：需要先在 .env 中设置 DEFAULT_TIME_RANGE_DAYS，或者显式指定时间范围
-curl "http://localhost:8000/api/v1/analysis/most-frequent?limit=10"
-```
-
-#### 4. 健康检查
-
-```bash
-curl "http://localhost:8000/api/v1/analysis/health"
-```
-
-#### 5. 数据库统计摘要
-
-```bash
-curl "http://localhost:8000/api/v1/analysis/stats/summary"
-```
-
 ## 🗂️ 项目结构
 
 ```
@@ -209,13 +159,6 @@ uvicorn app.main:app --reload --port 8000
 3. 如果有数据，尝试 `/api/v1/analysis/top-slowest`
 4. 查看 AI 分析结果
 
-### 添加新功能
-
-1. **添加新的查询**：在 `app/repositories/performance_repo.py` 中添加方法
-2. **添加新的分析逻辑**：在 `app/services/analysis_service.py` 中实现
-3. **添加新的 API 端点**：在 `app/api/v1/analysis.py` 中定义路由
-4. **添加新的数据模型**：在 `app/models/` 中定义 Pydantic 模型
-
 ## 📊 数据库表说明
 
 ### 核心表
@@ -235,81 +178,3 @@ uvicorn app.main:app --reload --port 8000
 - **act_re_deployment** - 部署表
   - 流程定义的部署信息
 
-## 🔍 故障排查
-
-### 问题 1: 数据库连接失败
-
-```bash
-# 检查 PostgreSQL 容器
-docker ps | grep postgres
-
-# 如果未运行，启动容器
-cd /Users/I605218/projects/fnd-processengine-ms
-docker-compose up -d postgres
-
-# 查看容器日志
-docker logs fnd-processengine-ms-postgres-1
-```
-
-### 问题 2: API Key 错误
-
-```bash
-# 检查 .env 文件
-cat .env | grep ANTHROPIC_API_KEY
-
-# 确认格式正确（不要有引号或多余空格）
-# 正确: ANTHROPIC_API_KEY=sk-ant-api03-xxx
-# 错误: ANTHROPIC_API_KEY="sk-ant-api03-xxx"
-```
-
-### 问题 3: 端口被占用
-
-```bash
-# 查找占用 8000 端口的进程
-lsof -i :8000
-
-# 停止进程或使用其他端口
-uvicorn app.main:app --reload --port 8001
-
-# 或在 .env 中修改
-echo "APP_PORT=8001" >> .env
-```
-
-### 问题 4: 数据库没有数据
-
-```bash
-# 运行统计摘要检查
-curl "http://localhost:8000/api/v1/analysis/stats/summary"
-
-# 如果数据库为空，需要先运行 Process Engine 生成数据
-# 或者查看 sql/sample_data.sql 插入测试数据
-```
-
-## 🚀 后续扩展
-
-### Phase 2 - 增强分析功能
-
-- [ ] 活动级别性能分析
-- [ ] 变量大小对性能的影响分析
-- [ ] 流程版本对比分析
-- [ ] 时间序列趋势分析
-
-### Phase 3 - AI 生成查询
-
-- [ ] 自然语言转 SQL
-- [ ] 查询安全验证
-- [ ] 查询结果可视化
-
-### Phase 4 - Web 界面
-
-- [ ] Streamlit 仪表板
-- [ ] 交互式图表
-- [ ] 报告导出（PDF/Excel）
-
-## 📝 License
-
-内部项目
-
-## 👥 Contact
-
-如有问题，请联系项目维护者。
