@@ -36,3 +36,7 @@ Thumbs.db
 # Project specific
 *.db
 *.sqlite
+
+SESSION_SUMMARY.md
+planA.md
+
