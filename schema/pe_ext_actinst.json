@@ -435,5 +435,68 @@
     "结果排序优先使用有意义的业务指标（如avg_duration, failure_rate），而非记录数量",
     "JOIN操作时，使用LEFT JOIN确保主表数据不丢失（如子流程可能已被删除）",
     "分析结果应区分不同activity_type给出差异化建议（如serviceTask优化服务响应，userTask优化流程设计）"
-  ]
+  ],
+
+  "semantic_metrics": {
+    "description": "活动实例的语义指标",
+    "base_metrics": {
+      "duration_seconds": {
+        "formula": "EXTRACT(EPOCH FROM (end_time - start_time))",
+        "description": "活动执行时长（秒）"
+      },
+      "is_user_task": {
+        "formula": "activity_type = 'userTask'",
+        "description": "是否为用户任务"
+      },
+      "is_service_task": {
+        "formula": "activity_type = 'serviceTask'",
+        "description": "是否为服务任务"
+      },
+      "is_failed": {
+        "formula": "status = 'FAILED'",
+        "description": "是否失败"
+      },
+      "is_bottleneck": {
+        "formula": "EXTRACT(EPOCH FROM (end_time - start_time)) > 300",
+        "description": "是否为瓶颈活动（执行时长 > 5分钟）"
+      }
+    },
+    "aggregate_metrics": {
+      "avg_duration": {
+        "formula": "ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2)",
+        "description": "平均执行时长（秒）"
+      },
+      "max_duration": {
+        "formula": "ROUND((MAX(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2)",
+        "description": "最大执行时长（秒）"
+      },
+      "p95_duration": {
+        "formula": "ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2)",
+        "description": "P95执行时长（秒）"
+      },
+      "failure_rate": {
+        "formula": "ROUND((100.0 * COUNT(CASE WHEN status = 'FAILED' THEN 1 END) / NULLIF(COUNT(*), 0))::numeric, 2)",
+        "description": "失败率（%）"
+      }
+    }
+  },
+
+  "cte_templates": {
+    "description": "活动实例分析的 CTE 模板",
+    "bottleneck_detection": {
+      "name": "瓶颈活动检测",
+      "template": "WITH activity_stats AS (\n  SELECT\n    activity_name,\n    activity_type,\n    COUNT(*) as execution_count,\n    ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as avg_duration,\n    ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as p95_duration,\n    ROUND((MAX(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as max_duration\n  FROM pe_ext_actinst\n  WHERE status = 'COMPLETED'\n    AND end_time IS NOT NULL\n    AND start_time IS NOT NULL\n    AND sub_status NOT IN ('BREAKING', 'SUB_BREAKING')\n    AND start_time >= CURRENT_TIMESTAMP - INTERVAL '{time_range}'\n    AND tenant_id = '{tenant_id}'\n  GROUP BY activity_name, activity_type\n  HAVING COUNT(*) > {min_count}\n)\nSELECT *,\n  CASE\n    WHEN avg_duration > 300 THEN 'CRITICAL'\n    WHEN avg_duration > 60 THEN 'WARNING'\n    ELSE 'NORMAL'\n  END as bottleneck_level\nFROM activity_stats\nORDER BY avg_duration DESC",
+      "use_case": "识别流程中的瓶颈活动"
+    },
+    "activity_performance_by_process": {
+      "name": "按流程分组的活动性能",
+      "template": "WITH process_activity_stats AS (\n  SELECT\n    p.proc_def_id,\n    a.activity_name,\n    a.activity_type,\n    COUNT(*) as execution_count,\n    ROUND((AVG(EXTRACT(EPOCH FROM (a.end_time - a.start_time))))::numeric, 2) as avg_activity_duration,\n    ROUND((AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as avg_process_duration\n  FROM pe_ext_actinst a\n  INNER JOIN pe_ext_procinst p ON p.id = a.proc_inst_id\n  WHERE a.status = 'COMPLETED'\n    AND a.end_time IS NOT NULL\n    AND p.end_time IS NOT NULL\n    AND a.start_time >= CURRENT_TIMESTAMP - INTERVAL '{time_range}'\n    AND a.tenant_id = '{tenant_id}'\n  GROUP BY p.proc_def_id, a.activity_name, a.activity_type\n)\nSELECT *,\n  ROUND((100.0 * avg_activity_duration / NULLIF(avg_process_duration, 0))::numeric, 2) as duration_percentage\nFROM process_activity_stats\nWHERE execution_count > {min_count}\nORDER BY duration_percentage DESC",
+      "use_case": "分析活动在流程中的耗时占比"
+    },
+    "user_task_waiting_time": {
+      "name": "用户任务等待时间分析",
+      "template": "WITH user_task_stats AS (\n  SELECT\n    activity_name,\n    COUNT(*) as task_count,\n    ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as avg_wait_time_seconds,\n    ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))) / 3600.0)::numeric, 2) as avg_wait_time_hours,\n    ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as p95_wait_time_seconds\n  FROM pe_ext_actinst\n  WHERE activity_type = 'userTask'\n    AND status = 'COMPLETED'\n    AND end_time IS NOT NULL\n    AND start_time >= CURRENT_TIMESTAMP - INTERVAL '{time_range}'\n    AND tenant_id = '{tenant_id}'\n  GROUP BY activity_name\n)\nSELECT *\nFROM user_task_stats\nWHERE task_count > {min_count}\nORDER BY avg_wait_time_seconds DESC",
+      "use_case": "分析用户任务的等待时间，优化人工审批流程"
+    }
+  }
 }

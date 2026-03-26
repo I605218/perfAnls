@@ -446,5 +446,63 @@
       "description": "分析异步任务对流程整体性能的影响",
       "analysis_approach": "关联 pe_ext_procinst 表，对比有异步任务和无异步任务的流程执行时长，量化异步调度开销"
     }
-  ]
+  ],
+
+  "semantic_metrics": {
+    "description": "任务队列的语义指标",
+    "base_metrics": {
+      "wait_time_seconds": {
+        "formula": "EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))",
+        "description": "任务等待时长（秒）"
+      },
+      "is_deadletter": {
+        "formula": "retries_ = 0",
+        "description": "是否为死信任务"
+      },
+      "is_locked": {
+        "formula": "lock_owner_ IS NOT NULL AND lock_exp_time_ > CURRENT_TIMESTAMP",
+        "description": "是否被锁定执行中"
+      },
+      "is_overdue": {
+        "formula": "duedate_ < CURRENT_TIMESTAMP AND lock_owner_ IS NULL",
+        "description": "是否已逾期未执行"
+      }
+    },
+    "aggregate_metrics": {
+      "total_job_count": {
+        "formula": "COUNT(*)",
+        "description": "任务总数"
+      },
+      "avg_wait_time": {
+        "formula": "ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))))::numeric, 2)",
+        "description": "平均等待时长（秒）"
+      },
+      "deadletter_count": {
+        "formula": "COUNT(CASE WHEN retries_ = 0 THEN 1 END)",
+        "description": "死信任务数量"
+      },
+      "pending_count": {
+        "formula": "COUNT(CASE WHEN lock_owner_ IS NULL THEN 1 END)",
+        "description": "等待执行的任务数"
+      },
+      "locked_count": {
+        "formula": "COUNT(CASE WHEN lock_owner_ IS NOT NULL THEN 1 END)",
+        "description": "执行中的任务数"
+      }
+    }
+  },
+
+  "cte_templates": {
+    "description": "任务队列分析的 CTE 模板",
+    "queue_health_check": {
+      "name": "队列健康检查",
+      "template": "WITH queue_stats AS (\n  SELECT\n    COUNT(*) as total_jobs,\n    COUNT(CASE WHEN lock_owner_ IS NULL THEN 1 END) as pending_jobs,\n    COUNT(CASE WHEN lock_owner_ IS NOT NULL THEN 1 END) as locked_jobs,\n    COUNT(CASE WHEN retries_ = 0 THEN 1 END) as deadletter_jobs,\n    ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))))::numeric, 2) as avg_wait_seconds\n  FROM act_ru_job\n  WHERE tenant_id_ = '{tenant_id}'\n)\nSELECT *,\n  CASE\n    WHEN total_jobs < 100 AND deadletter_jobs = 0 THEN 'HEALTHY'\n    WHEN total_jobs < 500 AND deadletter_jobs < 10 THEN 'WARNING'\n    ELSE 'CRITICAL'\n  END as health_status\nFROM queue_stats",
+      "use_case": "快速评估任务队列健康状态"
+    },
+    "job_backlog_by_process": {
+      "name": "按流程统计任务积压",
+      "template": "WITH backlog_stats AS (\n  SELECT\n    proc_def_id_,\n    COUNT(*) as job_count,\n    COUNT(CASE WHEN retries_ = 0 THEN 1 END) as deadletter_count,\n    ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))))::numeric, 2) as avg_wait_seconds\n  FROM act_ru_job\n  WHERE tenant_id_ = '{tenant_id}'\n    AND create_time_ >= CURRENT_TIMESTAMP - INTERVAL '{time_range}'\n  GROUP BY proc_def_id_\n  HAVING COUNT(*) > {min_count}\n)\nSELECT * FROM backlog_stats\nORDER BY job_count DESC",
+      "use_case": "识别哪些流程产生了最多的任务积压"
+    }
+  }
 }

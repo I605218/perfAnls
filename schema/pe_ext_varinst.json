@@ -394,5 +394,115 @@
       "description": "特定业务数据（如订单类型、客户等级）影响流程性能",
       "analysis_approach": "通过变量名（name）筛选业务相关变量，分析其值与流程执行时间的关系"
     }
-  ]
+  ],
+  "semantic_metrics": {
+    "description": "可复用的变量指标定义，用于在CTE模板和复杂查询中引用",
+    "base_metrics": {
+      "value_size_bytes": {
+        "formula": "LENGTH(value)",
+        "description": "变量值大小（字节）",
+        "usage": "评估变量数据量，识别大字段变量"
+      },
+      "is_large_variable": {
+        "formula": "(LENGTH(value) > 1000 OR value_id IS NOT NULL)",
+        "description": "是否为大字段变量",
+        "usage": "过滤大字段变量进行性能分析"
+      },
+      "is_external_storage": {
+        "formula": "(value_id IS NOT NULL)",
+        "description": "是否使用外部存储（ACT_GE_BYTEARRAY）",
+        "usage": "识别需要外部存储的变量"
+      },
+      "is_process_level": {
+        "formula": "(act_inst_id IS NULL)",
+        "description": "是否为流程级变量",
+        "usage": "区分流程级和活动级变量"
+      },
+      "is_activity_level": {
+        "formula": "(act_inst_id IS NOT NULL)",
+        "description": "是否为活动级变量",
+        "usage": "区分流程级和活动级变量"
+      },
+      "update_count": {
+        "formula": "CASE WHEN update_time > create_time + INTERVAL '1 second' THEN 1 ELSE 0 END",
+        "description": "变量是否被更新过",
+        "usage": "识别频繁更新的变量"
+      },
+      "is_serializable_type": {
+        "formula": "(type IN ('json', 'serializable', 'bytes'))",
+        "description": "是否为高开销序列化类型",
+        "usage": "识别序列化性能开销大的变量类型"
+      }
+    },
+    "aggregate_metrics": {
+      "avg_variable_size": {
+        "formula": "ROUND((AVG(LENGTH(value)))::numeric, 2)",
+        "description": "平均变量大小",
+        "usage": "评估整体数据量水平"
+      },
+      "max_variable_size": {
+        "formula": "MAX(LENGTH(value))",
+        "description": "最大变量大小",
+        "usage": "识别极端大字段变量"
+      },
+      "large_variable_count": {
+        "formula": "COUNT(CASE WHEN (LENGTH(value) > 1000 OR value_id IS NOT NULL) THEN 1 END)",
+        "description": "大字段变量数量",
+        "usage": "统计大字段变量的分布"
+      },
+      "external_storage_count": {
+        "formula": "COUNT(CASE WHEN value_id IS NOT NULL THEN 1 END)",
+        "description": "外部存储变量数量",
+        "usage": "统计使用外部存储的变量"
+      },
+      "avg_variables_per_process": {
+        "formula": "ROUND(((COUNT(id))::numeric / NULLIF((COUNT(DISTINCT proc_inst_id))::numeric, 0)), 2)",
+        "description": "每个流程的平均变量数量",
+        "usage": "评估流程变量使用密度"
+      },
+      "update_frequency": {
+        "formula": "ROUND(((COUNT(CASE WHEN update_time > create_time + INTERVAL '1 second' THEN 1 END))::numeric / NULLIF((COUNT(id))::numeric, 0) * 100), 2)",
+        "description": "变量更新频率（百分比）",
+        "usage": "评估变量修改的活跃度"
+      }
+    }
+  },
+  "cte_templates": {
+    "description": "预定义的CTE（通用表表达式）模板，用于复杂变量分析场景",
+    "large_variable_impact": {
+      "name": "large_variable_impact",
+      "description": "分析大字段变量对流程性能的影响",
+      "cte_sql": "WITH large_vars AS (\n  SELECT \n    v.name,\n    v.type,\n    v.proc_inst_id,\n    LENGTH(v.value) as value_size,\n    CASE WHEN value_id IS NOT NULL THEN 1 ELSE 0 END as is_external\n  FROM pe_ext_varinst v\n  WHERE v.create_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n    AND (LENGTH(v.value) > 1000 OR v.value_id IS NOT NULL)\n),\nprocess_perf AS (\n  SELECT \n    p.id as proc_inst_id,\n    SPLIT_PART(p.proc_def_id, ':', 1) as process_key,\n    EXTRACT(EPOCH FROM (p.end_time - p.start_time)) as duration_seconds\n  FROM pe_ext_procinst p\n  WHERE p.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n    AND p.end_time IS NOT NULL\n    AND p.start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n)",
+      "usage": "识别大字段变量与流程执行时间的关联，评估数据量对性能的影响",
+      "example_query": "SELECT \n  lv.name as variable_name,\n  lv.type,\n  COUNT(DISTINCT lv.proc_inst_id) as affected_process_count,\n  ROUND((AVG(lv.value_size))::numeric, 2) as avg_size_bytes,\n  SUM(lv.is_external) as external_storage_count,\n  ROUND((AVG(pp.duration_seconds))::numeric, 2) as avg_duration_seconds\nFROM large_vars lv\nINNER JOIN process_perf pp ON lv.proc_inst_id = pp.proc_inst_id\nGROUP BY lv.name, lv.type\nHAVING COUNT(DISTINCT lv.proc_inst_id) > 5\nORDER BY avg_duration_seconds DESC\nLIMIT 20;"
+    },
+    "variable_type_serialization_cost": {
+      "name": "variable_type_serialization_cost",
+      "description": "按变量类型评估序列化性能开销",
+      "cte_sql": "WITH var_type_stats AS (\n  SELECT \n    v.type,\n    v.proc_inst_id,\n    LENGTH(v.value) as value_size,\n    CASE WHEN v.type IN ('json', 'serializable', 'bytes') THEN 1 ELSE 0 END as is_heavy_type\n  FROM pe_ext_varinst v\n  WHERE v.create_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n    AND v.type IS NOT NULL\n),\nprocess_metrics AS (\n  SELECT \n    p.id as proc_inst_id,\n    EXTRACT(EPOCH FROM (p.end_time - p.start_time)) as duration_seconds\n  FROM pe_ext_procinst p\n  WHERE p.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n    AND p.end_time IS NOT NULL\n    AND p.start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n)",
+      "usage": "对比不同变量类型的流程性能，识别高开销序列化类型",
+      "example_query": "SELECT \n  vts.type as variable_type,\n  COUNT(DISTINCT vts.proc_inst_id) as process_count,\n  COUNT(*) as variable_count,\n  ROUND((AVG(vts.value_size))::numeric, 2) as avg_size_bytes,\n  SUM(vts.is_heavy_type) as heavy_type_count,\n  ROUND((AVG(pm.duration_seconds))::numeric, 2) as avg_duration_seconds\nFROM var_type_stats vts\nINNER JOIN process_metrics pm ON vts.proc_inst_id = pm.proc_inst_id\nGROUP BY vts.type\nHAVING COUNT(*) > 100\nORDER BY avg_duration_seconds DESC;"
+    },
+    "variable_density_by_process": {
+      "name": "variable_density_by_process",
+      "description": "统计每个流程的变量密度（数量和总大小）",
+      "cte_sql": "WITH process_vars AS (\n  SELECT \n    p.id as proc_inst_id,\n    SPLIT_PART(p.proc_def_id, ':', 1) as process_key,\n    EXTRACT(EPOCH FROM (p.end_time - p.start_time)) as duration_seconds,\n    COUNT(v.id) as variable_count,\n    SUM(LENGTH(v.value)) as total_variable_size,\n    COUNT(CASE WHEN v.value_id IS NOT NULL THEN 1 END) as external_storage_count\n  FROM pe_ext_procinst p\n  LEFT JOIN pe_ext_varinst v ON p.id = v.proc_inst_id\n  WHERE p.start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n    AND p.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n    AND p.end_time IS NOT NULL\n  GROUP BY p.id, p.proc_def_id, p.start_time, p.end_time\n)",
+      "usage": "识别变量数量或大小过多的流程，评估变量管理策略",
+      "example_query": "SELECT \n  process_key,\n  COUNT(*) as instance_count,\n  ROUND((AVG(variable_count))::numeric, 2) as avg_variables,\n  ROUND((AVG(total_variable_size))::numeric, 2) as avg_total_size_bytes,\n  ROUND((AVG(external_storage_count))::numeric, 2) as avg_external_storage,\n  ROUND((AVG(duration_seconds))::numeric, 2) as avg_duration_seconds\nFROM process_vars\nGROUP BY process_key\nHAVING COUNT(*) > 10\nORDER BY avg_variables DESC\nLIMIT 20;"
+    },
+    "frequent_update_analysis": {
+      "name": "frequent_update_analysis",
+      "description": "识别频繁更新的变量及其对性能的影响",
+      "cte_sql": "WITH variable_updates AS (\n  SELECT \n    v.name,\n    v.type,\n    v.proc_inst_id,\n    CASE WHEN v.update_time > v.create_time + INTERVAL '1 second' THEN 1 ELSE 0 END as is_updated,\n    EXTRACT(EPOCH FROM (v.update_time - v.create_time)) as update_delay_seconds\n  FROM pe_ext_varinst v\n  WHERE v.create_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n),\nprocess_context AS (\n  SELECT \n    p.id as proc_inst_id,\n    SPLIT_PART(p.proc_def_id, ':', 1) as process_key,\n    EXTRACT(EPOCH FROM (p.end_time - p.start_time)) as duration_seconds\n  FROM pe_ext_procinst p\n  WHERE p.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n    AND p.end_time IS NOT NULL\n    AND p.start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n)",
+      "usage": "找出被反复修改的变量，评估变量更新对性能的影响",
+      "example_query": "SELECT \n  vu.name as variable_name,\n  vu.type,\n  COUNT(DISTINCT vu.proc_inst_id) as process_count,\n  SUM(vu.is_updated) as update_count,\n  ROUND(((SUM(vu.is_updated))::numeric / NULLIF((COUNT(DISTINCT vu.proc_inst_id))::numeric, 0)), 2) as avg_updates_per_process,\n  ROUND((AVG(vu.update_delay_seconds))::numeric, 2) as avg_update_delay_seconds,\n  ROUND((AVG(pc.duration_seconds))::numeric, 2) as avg_duration_seconds\nFROM variable_updates vu\nINNER JOIN process_context pc ON vu.proc_inst_id = pc.proc_inst_id\nGROUP BY vu.name, vu.type\nHAVING SUM(vu.is_updated) > 50 AND COUNT(DISTINCT vu.proc_inst_id) > 5\nORDER BY avg_updates_per_process DESC\nLIMIT 20;"
+    },
+    "input_output_comparison": {
+      "name": "input_output_comparison",
+      "description": "对比流程的输入和输出变量，识别数据膨胀问题",
+      "cte_sql": "WITH variable_io AS (\n  SELECT \n    v.proc_inst_id,\n    v.category,\n    COUNT(v.id) as var_count,\n    SUM(LENGTH(v.value)) as total_size\n  FROM pe_ext_varinst v\n  WHERE v.create_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n    AND v.category IN ('Input', 'Output')\n  GROUP BY v.proc_inst_id, v.category\n),\nprocess_summary AS (\n  SELECT \n    p.id as proc_inst_id,\n    SPLIT_PART(p.proc_def_id, ':', 1) as process_key,\n    EXTRACT(EPOCH FROM (p.end_time - p.start_time)) as duration_seconds\n  FROM pe_ext_procinst p\n  WHERE p.status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n    AND p.end_time IS NOT NULL\n    AND p.start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n)",
+      "usage": "评估流程的数据输入输出比例，识别数据膨胀导致的性能问题",
+      "example_query": "SELECT \n  ps.process_key,\n  COUNT(DISTINCT ps.proc_inst_id) as process_count,\n  ROUND((AVG(CASE WHEN vi.category = 'Input' THEN vi.var_count END))::numeric, 2) as avg_input_count,\n  ROUND((AVG(CASE WHEN vi.category = 'Output' THEN vi.var_count END))::numeric, 2) as avg_output_count,\n  ROUND((AVG(CASE WHEN vi.category = 'Input' THEN vi.total_size END))::numeric, 2) as avg_input_size,\n  ROUND((AVG(CASE WHEN vi.category = 'Output' THEN vi.total_size END))::numeric, 2) as avg_output_size,\n  ROUND((AVG(ps.duration_seconds))::numeric, 2) as avg_duration_seconds\nFROM process_summary ps\nLEFT JOIN variable_io vi ON ps.proc_inst_id = vi.proc_inst_id\nGROUP BY ps.process_key\nHAVING COUNT(DISTINCT ps.proc_inst_id) > 10\nORDER BY avg_duration_seconds DESC\nLIMIT 20;"
+    }
+  }
 }

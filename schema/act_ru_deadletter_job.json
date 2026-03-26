@@ -422,5 +422,48 @@
       "description": "评估团队对死信任务的响应速度",
       "analysis_approach": "统计死信任务从创建到解决的平均时长，优化故障响应流程"
     }
-  ]
+  ],
+
+  "semantic_metrics": {
+    "description": "死信队列的语义指标",
+    "base_metrics": {
+      "age_seconds": {
+        "formula": "EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))",
+        "description": "死信任务年龄（秒）"
+      },
+      "age_hours": {
+        "formula": "EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_)) / 3600.0",
+        "description": "死信任务年龄（小时）"
+      }
+    },
+    "aggregate_metrics": {
+      "total_deadletter_count": {
+        "formula": "COUNT(*)",
+        "description": "死信总数"
+      },
+      "avg_age_hours": {
+        "formula": "ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_)) / 3600.0))::numeric, 2)",
+        "description": "平均死信年龄（小时）"
+      },
+      "deadletter_rate": {
+        "formula": "ROUND((100.0 * COUNT(d.id_) / NULLIF(COUNT(p.id), 0))::numeric, 2)",
+        "description": "死信率（%），需要JOIN流程表",
+        "requires_join": "pe_ext_procinst"
+      }
+    }
+  },
+
+  "cte_templates": {
+    "description": "死信队列分析的 CTE 模板",
+    "exception_root_cause": {
+      "name": "异常根因分析",
+      "template": "WITH exception_groups AS (\n  SELECT\n    LEFT(exception_msg_, 100) as exception_category,\n    COUNT(*) as occurrence_count,\n    COUNT(DISTINCT process_instance_id_) as affected_processes,\n    MIN(create_time_) as first_seen,\n    MAX(create_time_) as last_seen\n  FROM act_ru_deadletter_job\n  WHERE tenant_id_ = '{tenant_id}'\n    AND exception_msg_ IS NOT NULL\n  GROUP BY LEFT(exception_msg_, 100)\n)\nSELECT *\nFROM exception_groups\nORDER BY occurrence_count DESC\nLIMIT 20",
+      "use_case": "快速识别最常见的失败原因"
+    },
+    "deadletter_with_process_context": {
+      "name": "死信任务与流程上下文",
+      "template": "WITH deadletter_context AS (\n  SELECT\n    d.id_,\n    d.element_name_,\n    d.exception_msg_,\n    d.create_time_ as deadletter_time,\n    p.proc_def_id,\n    p.start_time as process_start,\n    p.status as process_status,\n    EXTRACT(EPOCH FROM (p.end_time - p.start_time)) as process_duration\n  FROM act_ru_deadletter_job d\n  LEFT JOIN pe_ext_procinst p ON p.id = d.process_instance_id_\n  WHERE d.tenant_id_ = '{tenant_id}'\n    AND d.create_time_ >= CURRENT_TIMESTAMP - INTERVAL '{time_range}'\n)\nSELECT * FROM deadletter_context\nORDER BY deadletter_time DESC",
+      "use_case": "查看死信任务的完整业务上下文"
+    }
+  }
 }

@@ -1,0 +1,134 @@
+{
+  "semantic_metrics": {
+    "description": "预定义的业务指标和计算逻辑，AI 可以直接引用这些指标，避免重复构建复杂表达式",
+
+    "base_metrics": {
+      "duration_seconds": {
+        "name": "执行时长（秒）",
+        "formula": "EXTRACT(EPOCH FROM (end_time - start_time))",
+        "return_type": "double precision",
+        "required_columns": ["start_time", "end_time"],
+        "description": "流程执行时长，单位秒",
+        "usage_hint": "计算性能指标的基础公式"
+      },
+
+      "duration_minutes": {
+        "name": "执行时长（分钟）",
+        "formula": "EXTRACT(EPOCH FROM (end_time - start_time)) / 60.0",
+        "return_type": "double precision",
+        "required_columns": ["start_time", "end_time"]
+      },
+
+      "is_completed": {
+        "name": "是否完成",
+        "formula": "status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')",
+        "return_type": "boolean",
+        "required_columns": ["status"]
+      },
+
+      "is_failed": {
+        "name": "是否失败",
+        "formula": "status = 'FAILED'",
+        "return_type": "boolean",
+        "required_columns": ["status"]
+      },
+
+      "process_key": {
+        "name": "流程定义Key",
+        "formula": "SPLIT_PART(proc_def_id, ':', 1)",
+        "return_type": "text",
+        "required_columns": ["proc_def_id"],
+        "description": "提取流程定义Key，去除版本号"
+      }
+    },
+
+    "aggregate_metrics": {
+      "avg_duration_seconds": {
+        "name": "平均执行时长",
+        "formula": "ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2)",
+        "return_type": "numeric",
+        "required_columns": ["start_time", "end_time"],
+        "description": "流程平均执行时长（秒），保留2位小数"
+      },
+
+      "p95_duration_seconds": {
+        "name": "P95执行时长",
+        "formula": "ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2)",
+        "return_type": "numeric",
+        "required_columns": ["start_time", "end_time"],
+        "description": "95%分位数执行时长"
+      },
+
+      "success_rate": {
+        "name": "成功率",
+        "formula": "ROUND((100.0 * COUNT(CASE WHEN status IN ('COMPLETED', 'COMPLETED_WITH_ERROR') THEN 1 END) / NULLIF(COUNT(*), 0))::numeric, 2)",
+        "return_type": "numeric",
+        "required_columns": ["status"],
+        "description": "流程成功率百分比"
+      },
+
+      "failure_rate": {
+        "name": "失败率",
+        "formula": "ROUND((100.0 * COUNT(CASE WHEN status = 'FAILED' THEN 1 END) / NULLIF(COUNT(*), 0))::numeric, 2)",
+        "return_type": "numeric",
+        "required_columns": ["status"]
+      },
+
+      "total_count": {
+        "name": "总数",
+        "formula": "COUNT(*)",
+        "return_type": "bigint"
+      }
+    }
+  },
+
+  "metric_templates": {
+    "description": "预定义的 CTE 模板，用于复杂分析场景",
+
+    "time_series_hourly": {
+      "name": "按小时时间序列分析",
+      "description": "将数据按小时分组，统计每小时的指标",
+      "cte_template": "WITH hourly_stats AS (\n  SELECT \n    DATE_TRUNC('hour', start_time) as hour_bucket,\n    COUNT(*) as execution_count,\n    COUNT(CASE WHEN status IN ('COMPLETED', 'COMPLETED_WITH_ERROR') THEN 1 END) as success_count,\n    COUNT(CASE WHEN status = 'FAILED' THEN 1 END) as failed_count,\n    ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as avg_duration_seconds,\n    ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as p95_duration_seconds\n  FROM {table_name}\n  WHERE start_time >= {time_range}\n    AND end_time IS NOT NULL\n    {additional_filters}\n  GROUP BY DATE_TRUNC('hour', start_time)\n  ORDER BY hour_bucket DESC\n)",
+      "parameters": ["table_name", "time_range", "additional_filters"],
+      "use_cases": ["趋势分析", "负载分析", "性能波动检测"]
+    },
+
+    "top_k_by_metric": {
+      "name": "按指标排序的 TOP K",
+      "description": "找出某个指标最高/最低的 K 个对象",
+      "cte_template": "WITH ranked_items AS (\n  SELECT \n    {group_by_column},\n    COUNT(*) as execution_count,\n    {metric_formula} as metric_value,\n    ROW_NUMBER() OVER (ORDER BY {metric_formula} {order_direction}) as rank\n  FROM {table_name}\n  WHERE {filter_conditions}\n  GROUP BY {group_by_column}\n  HAVING COUNT(*) > {min_count}\n)\nSELECT * FROM ranked_items WHERE rank <= {k}",
+      "parameters": ["group_by_column", "metric_formula", "order_direction", "table_name", "filter_conditions", "min_count", "k"],
+      "use_cases": ["最慢流程", "失败率最高", "执行次数最多"]
+    },
+
+    "comparison_period": {
+      "name": "时间段对比分析",
+      "description": "对比两个时间段的指标变化",
+      "cte_template": "WITH current_period AS (\n  SELECT \n    {group_by_column},\n    COUNT(*) as count,\n    {metric_formula} as metric_value\n  FROM {table_name}\n  WHERE start_time >= {current_period_start}\n    AND start_time < {current_period_end}\n    {additional_filters}\n  GROUP BY {group_by_column}\n),\nprevious_period AS (\n  SELECT \n    {group_by_column},\n    COUNT(*) as count,\n    {metric_formula} as metric_value\n  FROM {table_name}\n  WHERE start_time >= {previous_period_start}\n    AND start_time < {previous_period_end}\n    {additional_filters}\n  GROUP BY {group_by_column}\n)\nSELECT \n  COALESCE(c.{group_by_column}, p.{group_by_column}) as {group_by_column},\n  p.count as previous_count,\n  c.count as current_count,\n  p.metric_value as previous_metric,\n  c.metric_value as current_metric,\n  ROUND((c.metric_value - p.metric_value)::numeric, 2) as metric_change,\n  ROUND((100.0 * (c.metric_value - p.metric_value) / NULLIF(p.metric_value, 0))::numeric, 2) as metric_change_pct\nFROM current_period c\nFULL OUTER JOIN previous_period p ON c.{group_by_column} = p.{group_by_column}\nORDER BY ABS(metric_change_pct) DESC NULLS LAST",
+      "parameters": ["group_by_column", "metric_formula", "table_name", "current_period_start", "current_period_end", "previous_period_start", "previous_period_end", "additional_filters"],
+      "use_cases": ["周对周对比", "月对月对比", "性能趋势"]
+    },
+
+    "multi_table_join": {
+      "name": "多表关联分析",
+      "description": "关联多张表进行综合分析",
+      "cte_template": "WITH process_metrics AS (\n  SELECT \n    id,\n    proc_def_id,\n    EXTRACT(EPOCH FROM (end_time - start_time)) as duration_seconds,\n    status\n  FROM pe_ext_procinst\n  WHERE {filter_conditions}\n),\naggregated_metrics AS (\n  SELECT \n    {group_by_column},\n    COUNT(*) as process_count,\n    ROUND((AVG(duration_seconds))::numeric, 2) as avg_duration,\n    {additional_metrics}\n  FROM process_metrics\n  {join_clause}\n  GROUP BY {group_by_column}\n)\nSELECT * FROM aggregated_metrics\nORDER BY {order_by_clause}",
+      "parameters": ["filter_conditions", "group_by_column", "additional_metrics", "join_clause", "order_by_clause"],
+      "use_cases": ["流程与活动关联", "流程与变量关联", "综合性能分析"]
+    }
+  },
+
+  "usage_examples": {
+    "simple_metric_usage": {
+      "user_query": "查询平均执行时长",
+      "generated_sql": "SELECT \n  ROUND((AVG(EXTRACT(EPOCH FROM (end_time - start_time))))::numeric, 2) as avg_duration_seconds\nFROM pe_ext_procinst\nWHERE status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')\n  AND end_time IS NOT NULL",
+      "explanation": "直接使用 semantic_metrics.aggregate_metrics.avg_duration_seconds 的公式"
+    },
+
+    "cte_template_usage": {
+      "user_query": "对比本周和上周的流程性能",
+      "generated_sql": "-- AI 自动使用 comparison_period 模板，填充参数\nWITH current_period AS (...)\n, previous_period AS (...)\nSELECT ...",
+      "explanation": "AI 识别"对比"关键词，自动选择 comparison_period 模板"
+    }
+  }
+}

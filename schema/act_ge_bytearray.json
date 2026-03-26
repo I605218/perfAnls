@@ -202,5 +202,59 @@
       "description": "预测数据库存储容量何时会耗尽",
       "analysis_approach": "按时间段统计数据增长速度，结合业务量预测未来容量需求，提前规划扩容或清理策略"
     }
-  ]
+  ],
+
+  "semantic_metrics": {
+    "description": "二进制数据存储的语义指标",
+    "base_metrics": {
+      "size_bytes": {
+        "formula": "LENGTH(bytes_)",
+        "description": "数据大小（字节）"
+      },
+      "size_kb": {
+        "formula": "LENGTH(bytes_) / 1024.0",
+        "description": "数据大小（KB）"
+      },
+      "size_mb": {
+        "formula": "LENGTH(bytes_) / 1024.0 / 1024.0",
+        "description": "数据大小（MB）"
+      },
+      "is_large_data": {
+        "formula": "LENGTH(bytes_) > 5242880",
+        "description": "是否为大字段（> 5MB）"
+      },
+      "is_runtime_data": {
+        "formula": "deployment_id_ IS NULL",
+        "description": "是否为运行时数据（非部署资源）"
+      }
+    },
+    "aggregate_metrics": {
+      "total_size_mb": {
+        "formula": "ROUND((SUM(LENGTH(bytes_)) / 1024.0 / 1024.0)::numeric, 2)",
+        "description": "总数据大小（MB）"
+      },
+      "avg_size_kb": {
+        "formula": "ROUND((AVG(LENGTH(bytes_)) / 1024.0)::numeric, 2)",
+        "description": "平均数据大小（KB）"
+      },
+      "large_data_count": {
+        "formula": "COUNT(CASE WHEN LENGTH(bytes_) > 5242880 THEN 1 END)",
+        "description": "大字段数据数量（> 5MB）"
+      }
+    }
+  },
+
+  "cte_templates": {
+    "description": "二进制数据分析的 CTE 模板",
+    "storage_capacity_analysis": {
+      "name": "存储容量分析",
+      "template": "WITH storage_stats AS (\n  SELECT\n    CASE WHEN deployment_id_ IS NOT NULL THEN '部署资源' ELSE '运行时数据' END as data_category,\n    COUNT(*) as record_count,\n    ROUND((SUM(LENGTH(bytes_)) / 1024.0 / 1024.0)::numeric, 2) as total_size_mb,\n    ROUND((AVG(LENGTH(bytes_)) / 1024.0)::numeric, 2) as avg_size_kb,\n    COUNT(CASE WHEN LENGTH(bytes_) > 5242880 THEN 1 END) as large_data_count\n  FROM act_ge_bytearray\n  WHERE bytes_ IS NOT NULL\n  GROUP BY CASE WHEN deployment_id_ IS NOT NULL THEN '部署资源' ELSE '运行时数据' END\n)\nSELECT *,\n  ROUND((100.0 * total_size_mb / NULLIF(SUM(total_size_mb) OVER (), 0))::numeric, 2) as size_percentage\nFROM storage_stats",
+      "use_case": "快速了解存储容量分布"
+    },
+    "large_variable_impact": {
+      "name": "大变量对性能影响",
+      "template": "WITH variable_size_groups AS (\n  SELECT\n    v.proc_inst_id,\n    SUM(LENGTH(b.bytes_)) as total_variable_bytes,\n    CASE\n      WHEN SUM(LENGTH(b.bytes_)) < 102400 THEN '< 100KB'\n      WHEN SUM(LENGTH(b.bytes_)) < 1048576 THEN '100KB - 1MB'\n      WHEN SUM(LENGTH(b.bytes_)) < 5242880 THEN '1MB - 5MB'\n      ELSE '> 5MB'\n    END as size_range\n  FROM pe_ext_varinst v\n  INNER JOIN act_ge_bytearray b ON b.id_ = v.value_id\n  WHERE b.bytes_ IS NOT NULL\n  GROUP BY v.proc_inst_id\n)\nSELECT\n  vsg.size_range,\n  COUNT(*) as process_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as avg_duration_seconds\nFROM variable_size_groups vsg\nINNER JOIN pe_ext_procinst p ON p.id = vsg.proc_inst_id\nWHERE p.end_time IS NOT NULL\nGROUP BY vsg.size_range\nORDER BY\n  CASE vsg.size_range\n    WHEN '< 100KB' THEN 1\n    WHEN '100KB - 1MB' THEN 2\n    WHEN '1MB - 5MB' THEN 3\n    ELSE 4\n  END",
+      "use_case": "量化大变量对流程性能的影响"
+    }
+  }
 }
