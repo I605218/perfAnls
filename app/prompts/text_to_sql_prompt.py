@@ -10,9 +10,10 @@ from natural language descriptions. It includes:
 """
 
 import json
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 from dataclasses import dataclass
 from pathlib import Path
+from app.prompts.schema_selector import identify_relevant_tables
 
 
 @dataclass
@@ -32,23 +33,31 @@ class TextToSQLPromptBuilder:
     safe, efficient, and accurate SQL queries for performance analysis.
     """
 
-    def __init__(self, schema_dir: str = "schema"):
+    def __init__(self, schema_dir: str = "schema", enable_smart_loading: bool = True):
         """
         Initialize prompt builder.
 
         Args:
             schema_dir: Directory containing schema JSON files
+            enable_smart_loading: If True, only load relevant schemas based on user query.
+                                 If False, load all schemas (backward compatible).
         """
         self.schema_dir = Path(schema_dir)
         self.schema_cache = {}
-        self._load_schemas()
+        self.enable_smart_loading = enable_smart_loading
 
-    def _load_schemas(self):
-        """Load all schema files into memory."""
+        # Always load all schemas into cache for smart selection
+        self._load_all_schemas()
+
+    def _load_all_schemas(self):
+        """Load all schema files into memory cache."""
         schema_files = [
             "pe_ext_procinst.json",
             "pe_ext_actinst.json",
-            "pe_ext_varinst.json"
+            "pe_ext_varinst.json",
+            "act_ru_job.json",
+            "act_ge_bytearray.json",
+            "act_ru_deadletter_job.json"
         ]
 
         for filename in schema_files:
@@ -58,11 +67,16 @@ class TextToSQLPromptBuilder:
                     table_name = filename.replace('.json', '')
                     self.schema_cache[table_name] = json.load(f)
 
-    def build_system_prompt(self, include_examples: bool = True) -> str:
+    def build_system_prompt(
+        self,
+        user_query: Optional[str] = None,
+        include_examples: bool = True
+    ) -> str:
         """
         Build the system prompt for Text-to-SQL.
 
         Args:
+            user_query: Optional user query for smart schema loading
             include_examples: Whether to include few-shot examples
 
         Returns:
@@ -70,7 +84,7 @@ class TextToSQLPromptBuilder:
         """
         sections = [
             self._build_role_definition(),
-            self._build_schema_section(),
+            self._build_schema_section(user_query=user_query),
             self._build_constraints_section(),
             self._build_output_format_section()
         ]
@@ -101,12 +115,40 @@ You are analyzing SAP Digital Manufacturing Process Engine data stored in Postgr
 - **pe_ext_actinst**: Activity instance execution data (step-level metrics)
 - **pe_ext_varinst**: Variable data (business context and input/output parameters)"""
 
-    def _build_schema_section(self) -> str:
-        """Build the database schema section."""
+    def _build_schema_section(self, user_query: Optional[str] = None) -> str:
+        """
+        Build the database schema section.
+
+        Args:
+            user_query: Optional user query for smart schema selection
+
+        Returns:
+            Schema section string
+        """
         schema_parts = ["# Database Schema"]
 
+        # Determine which schemas to include
+        if self.enable_smart_loading and user_query:
+            # Smart loading: only include relevant tables
+            relevant_tables = identify_relevant_tables(user_query)
+            schemas_to_include = {
+                table: schema
+                for table, schema in self.schema_cache.items()
+                if table in relevant_tables
+            }
+
+            # Log for debugging
+            schema_parts.append(
+                f"\n**Note**: Based on your query, we're focusing on these tables: "
+                f"{', '.join(relevant_tables)}. "
+                f"If you need other tables, please mention them explicitly.\n"
+            )
+        else:
+            # Load all schemas (backward compatible)
+            schemas_to_include = self.schema_cache
+
         # Add each table's schema
-        for table_name, schema in self.schema_cache.items():
+        for table_name, schema in schemas_to_include.items():
             schema_parts.append(f"\n## Table: {schema['table_name']}")
             schema_parts.append(f"**Description**: {schema['description']}")
             schema_parts.append(f"**Business Context**: {schema['business_context']}")
@@ -511,7 +553,11 @@ Now, please convert the user's natural language query into SQL following all the
         Returns:
             Tuple of (system_prompt, user_prompt)
         """
-        system_prompt = self.build_system_prompt(include_examples=include_examples)
+        # Build system prompt with smart schema loading
+        system_prompt = self.build_system_prompt(
+            user_query=user_query,
+            include_examples=include_examples
+        )
         user_prompt = self.build_user_prompt(user_query, context)
 
         return system_prompt, user_prompt
