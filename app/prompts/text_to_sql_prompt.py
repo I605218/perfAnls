@@ -189,6 +189,50 @@ You are analyzing SAP Digital Manufacturing Process Engine data stored in Postgr
                     schema_parts.append(f"\n**Example {i}**: {query_example.get('description', 'N/A')}")
                     schema_parts.append(f"```sql\n{query_example.get('sql', '')}\n```")
 
+            # Add semantic metrics (reusable metric definitions)
+            if schema.get('semantic_metrics'):
+                schema_parts.append(f"\n### **Semantic Metrics for {schema['table_name']}** (Reusable Definitions)")
+                schema_parts.append("You can reference these predefined metrics in your queries:\n")
+
+                # Base metrics
+                if schema['semantic_metrics'].get('base_metrics'):
+                    schema_parts.append("**Base Metrics** (use in WHERE/SELECT/GROUP BY):")
+                    for metric_name, metric_def in schema['semantic_metrics']['base_metrics'].items():
+                        schema_parts.append(
+                            f"- **{metric_name}**: `{metric_def['formula']}` - {metric_def['description']}"
+                        )
+
+                # Aggregate metrics
+                if schema['semantic_metrics'].get('aggregate_metrics'):
+                    schema_parts.append("\n**Aggregate Metrics** (use in SELECT with GROUP BY):")
+                    for metric_name, metric_def in schema['semantic_metrics']['aggregate_metrics'].items():
+                        schema_parts.append(
+                            f"- **{metric_name}**: `{metric_def['formula']}` - {metric_def['description']}"
+                        )
+
+            # Add CTE templates (for complex analysis patterns)
+            if schema.get('cte_templates'):
+                schema_parts.append(f"\n### **CTE Templates for {schema['table_name']}** (Complex Analysis Patterns)")
+                schema_parts.append("For complex queries, you can use these pre-tested CTE templates:\n")
+
+                for template_name, template_def in schema['cte_templates'].items():
+                    if template_name == 'description':
+                        continue  # Skip the description field
+
+                    schema_parts.append(f"\n**{template_name}**:")
+                    schema_parts.append(f"- Description: {template_def.get('description', 'N/A')}")
+                    schema_parts.append(f"- Usage: {template_def.get('usage', 'N/A')}")
+
+                    # Show CTE SQL structure
+                    if template_def.get('cte_sql'):
+                        schema_parts.append(f"- CTE Structure:")
+                        schema_parts.append(f"```sql\n{template_def['cte_sql']}\n```")
+
+                    # Show example query
+                    if template_def.get('example_query'):
+                        schema_parts.append(f"- Example Complete Query:")
+                        schema_parts.append(f"```sql\n{template_def['example_query']}\n```")
+
         return "\n".join(schema_parts)
 
     def _build_constraints_section(self) -> str:
