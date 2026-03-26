@@ -1,0 +1,426 @@
+{
+  "table_name": "act_ru_deadletter_job",
+  "description": "流程引擎死信队列表，记录所有重试次数耗尽、彻底失败无法自动恢复的任务",
+  "business_context": "这是流程引擎的故障诊断中心！当异步任务重试多次后仍然失败（通常是重试3次后），会从 act_ru_job 表移动到此死信队列。死信队列中的任务代表系统性错误或外部依赖故障，必须人工干预才能恢复。死信队列的长度是系统健康度的关键指标：健康系统应该保持死信队列为空或接近为空。如果死信队列持续增长，说明存在需要紧急修复的问题。通过分析死信队列可以发现：最常见的失败原因、受影响最严重的流程定义、外部接口的可靠性问题等。",
+  "row_count_estimate": "理想情况下应该为0或接近0。如果持续积累说明存在系统性问题。",
+  "primary_key": "id_",
+  "indexes": [
+    {
+      "name": "act_ru_deadletter_job_pkey",
+      "type": "PRIMARY KEY",
+      "columns": ["id_"],
+      "description": "主键索引"
+    },
+    {
+      "name": "act_idx_deadletter_job_process_instance_id",
+      "type": "BTREE",
+      "columns": ["process_instance_id_"],
+      "description": "流程实例ID索引，用于快速查询某个流程的死信任务"
+    },
+    {
+      "name": "act_idx_deadletter_job_execution_id",
+      "type": "BTREE",
+      "columns": ["execution_id_"],
+      "description": "执行实例ID索引"
+    },
+    {
+      "name": "act_idx_deadletter_job_proc_def_id",
+      "type": "BTREE",
+      "columns": ["proc_def_id_"],
+      "description": "流程定义ID索引，用于统计哪些流程设计最容易产生死信任务"
+    },
+    {
+      "name": "act_idx_deadletter_job_exception_stack_id",
+      "type": "BTREE",
+      "columns": ["exception_stack_id_"],
+      "description": "异常堆栈ID索引，用于快速查询失败原因"
+    },
+    {
+      "name": "act_idx_deadletter_job_correlation_id",
+      "type": "BTREE",
+      "columns": ["correlation_id_"],
+      "description": "关联ID索引"
+    },
+    {
+      "name": "act_idx_djob_scope",
+      "type": "BTREE",
+      "columns": ["scope_id_", "scope_type_"],
+      "description": "作用域索引"
+    }
+  ],
+  "columns": [
+    {
+      "name": "id_",
+      "type": "varchar(64)",
+      "nullable": false,
+      "description": "死信任务唯一标识符（主键）",
+      "business_meaning": "每个进入死信队列的任务的唯一ID，原本来自 act_ru_job 表",
+      "indexed": true,
+      "sample_values": ["deadletter_job_001", "deadletter_job_002"]
+    },
+    {
+      "name": "rev_",
+      "type": "integer",
+      "nullable": true,
+      "description": "版本号（乐观锁）",
+      "business_meaning": "用于并发控制",
+      "indexed": false
+    },
+    {
+      "name": "category_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "任务分类",
+      "business_meaning": "标识任务的类别",
+      "indexed": false
+    },
+    {
+      "name": "type_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "任务类型",
+      "business_meaning": "定义任务的具体类型",
+      "indexed": false,
+      "possible_values": [
+        {
+          "value": "async-continuation",
+          "description": "异步延续任务 - 最常见的死信类型",
+          "usage_scenario": "异步服务任务调用外部接口失败",
+          "performance_note": "如果此类型死信大量增加，说明外部服务不稳定"
+        },
+        {
+          "value": "timer",
+          "description": "定时器任务",
+          "usage_scenario": "定时器触发的任务执行失败"
+        },
+        {
+          "value": "message",
+          "description": "消息任务",
+          "usage_scenario": "消息处理失败"
+        }
+      ],
+      "usage_hint": "按 type_ 分组统计可以识别哪种类型的任务最容易失败"
+    },
+    {
+      "name": "exclusive_",
+      "type": "boolean",
+      "nullable": true,
+      "description": "是否独占执行",
+      "business_meaning": "如果为 true，则同一流程实例的其他独占任务必须等待此任务完成",
+      "indexed": false,
+      "usage_hint": "独占任务进入死信会阻塞整个流程实例"
+    },
+    {
+      "name": "execution_id_",
+      "type": "varchar(64)",
+      "nullable": true,
+      "description": "执行实例ID",
+      "business_meaning": "关联到 act_ru_execution 表",
+      "indexed": true,
+      "foreign_key": {
+        "table": "act_ru_execution",
+        "column": "id_",
+        "relationship": "many_to_one"
+      }
+    },
+    {
+      "name": "process_instance_id_",
+      "type": "varchar(64)",
+      "nullable": true,
+      "description": "流程实例ID",
+      "business_meaning": "关联到 pe_ext_procinst 表的 id 字段，标识任务所属的流程实例",
+      "indexed": true,
+      "foreign_key": {
+        "table": "pe_ext_procinst",
+        "column": "id",
+        "relationship": "many_to_one"
+      },
+      "usage_hint": "通过此字段可以找到被死信任务阻塞的流程实例"
+    },
+    {
+      "name": "proc_def_id_",
+      "type": "varchar(64)",
+      "nullable": true,
+      "description": "流程定义ID",
+      "business_meaning": "关联到流程定义表，标识任务所属的流程定义",
+      "indexed": true,
+      "usage_hint": "按流程定义分组统计死信数量，识别设计缺陷或外部依赖问题"
+    },
+    {
+      "name": "element_id_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "BPMN元素ID",
+      "business_meaning": "BPMN模型中定义的活动节点ID（如'ServiceTask_1'）",
+      "indexed": false,
+      "usage_hint": "精确定位是哪个活动节点产生的死信任务"
+    },
+    {
+      "name": "element_name_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "BPMN元素名称",
+      "business_meaning": "BPMN模型中定义的活动节点可读名称（如'调用支付接口'）",
+      "indexed": false,
+      "usage_hint": "故障报告中优先显示此名称，比 element_id_ 更易理解"
+    },
+    {
+      "name": "scope_id_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "作用域ID",
+      "business_meaning": "任务的作用域标识",
+      "indexed": true
+    },
+    {
+      "name": "sub_scope_id_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "子作用域ID",
+      "business_meaning": "子作用域标识",
+      "indexed": true
+    },
+    {
+      "name": "scope_type_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "作用域类型",
+      "business_meaning": "作用域的类型标识",
+      "indexed": true
+    },
+    {
+      "name": "scope_definition_id_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "作用域定义ID",
+      "business_meaning": "作用域定义的标识",
+      "indexed": true
+    },
+    {
+      "name": "correlation_id_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "关联ID",
+      "business_meaning": "用于关联相关任务或事件",
+      "indexed": true
+    },
+    {
+      "name": "exception_stack_id_",
+      "type": "varchar(64)",
+      "nullable": true,
+      "description": "异常堆栈ID",
+      "business_meaning": "关联到 act_ge_bytearray 表，存储完整的异常堆栈信息",
+      "indexed": true,
+      "foreign_key": {
+        "table": "act_ge_bytearray",
+        "column": "id_",
+        "relationship": "many_to_one"
+      },
+      "usage_hint": "所有死信任务都应该有异常堆栈信息，用于诊断失败原因"
+    },
+    {
+      "name": "exception_msg_",
+      "type": "varchar(4000)",
+      "nullable": true,
+      "description": "异常消息",
+      "business_meaning": "任务失败时的错误消息摘要（最多4000字符）",
+      "indexed": false,
+      "usage_hint": "按异常消息分组统计是找出系统性问题的关键方法"
+    },
+    {
+      "name": "duedate_",
+      "type": "timestamp",
+      "nullable": true,
+      "description": "到期时间",
+      "business_meaning": "任务原本应该执行的时间点（用于定时器任务）",
+      "indexed": false,
+      "usage_hint": "对比 duedate_ 和 create_time_ 可以了解任务是否在预期时间点失败"
+    },
+    {
+      "name": "repeat_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "重复规则",
+      "business_meaning": "定时器的重复执行规则",
+      "indexed": false
+    },
+    {
+      "name": "handler_type_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "处理器类型",
+      "business_meaning": "执行该任务的处理器类型（Java类名）",
+      "indexed": false,
+      "usage_hint": "按处理器类型统计可以识别哪些处理器最不稳定"
+    },
+    {
+      "name": "handler_cfg_",
+      "type": "varchar(4000)",
+      "nullable": true,
+      "description": "处理器配置",
+      "business_meaning": "传递给处理器的配置信息",
+      "indexed": false
+    },
+    {
+      "name": "custom_values_id_",
+      "type": "varchar(64)",
+      "nullable": true,
+      "description": "自定义值ID",
+      "business_meaning": "关联到 act_ge_bytearray 表",
+      "indexed": true,
+      "foreign_key": {
+        "table": "act_ge_bytearray",
+        "column": "id_",
+        "relationship": "many_to_one"
+      }
+    },
+    {
+      "name": "create_time_",
+      "type": "timestamp",
+      "nullable": true,
+      "description": "进入死信队列的时间",
+      "business_meaning": "任务从 act_ru_job 移动到死信队列的时间戳",
+      "indexed": false,
+      "usage_hint": "对比 create_time_ 和 CURRENT_TIMESTAMP 可以计算任务在死信队列中停留的时长"
+    },
+    {
+      "name": "tenant_id_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "租户ID",
+      "business_meaning": "多租户环境下的租户标识",
+      "indexed": false,
+      "usage_hint": "生成SQL时，默认添加 tenant_id_ 过滤"
+    }
+  ],
+  "relationships": [
+    {
+      "type": "many_to_one",
+      "target_table": "pe_ext_procinst",
+      "target_column": "id",
+      "foreign_key": "process_instance_id_",
+      "description": "死信任务所属的流程实例",
+      "usage_hint": "通过此关联可以找到被死信任务阻塞的流程"
+    },
+    {
+      "type": "many_to_one",
+      "target_table": "act_ru_execution",
+      "target_column": "id_",
+      "foreign_key": "execution_id_",
+      "description": "死信任务所属的执行实例"
+    },
+    {
+      "type": "many_to_one",
+      "target_table": "act_re_procdef",
+      "target_column": "id_",
+      "foreign_key": "proc_def_id_",
+      "description": "死信任务所属的流程定义"
+    },
+    {
+      "type": "many_to_one",
+      "target_table": "act_ge_bytearray",
+      "target_column": "id_",
+      "foreign_key": "exception_stack_id_",
+      "description": "异常堆栈信息，诊断失败原因的关键"
+    }
+  ],
+  "common_queries": [
+    {
+      "description": "查询死信队列的健康状态（关键KPI）",
+      "sql": "SELECT \n  COUNT(*) as total_deadletter_count,\n  COUNT(DISTINCT process_instance_id_) as affected_processes,\n  COUNT(DISTINCT proc_def_id_) as affected_process_definitions,\n  MIN(create_time_) as oldest_deadletter_time,\n  MAX(create_time_) as latest_deadletter_time,\n  ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))))::numeric, 2) as avg_age_seconds\nFROM act_ru_deadletter_job\nWHERE tenant_id_ = 'your_tenant_id'",
+      "business_scenario": "系统健康检查：了解死信队列的总体情况，理想情况下应该为0",
+      "expected_result": "健康系统：total_deadletter_count = 0 或接近0，如果 > 100 说明存在严重问题"
+    },
+    {
+      "description": "按流程定义统计死信任务数量（找出问题流程）",
+      "sql": "SELECT \n  proc_def_id_,\n  COUNT(*) as deadletter_count,\n  COUNT(DISTINCT process_instance_id_) as affected_process_count,\n  MIN(create_time_) as first_occurrence,\n  MAX(create_time_) as last_occurrence,\n  ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_)) / 3600.0))::numeric, 2) as avg_age_hours\nFROM act_ru_deadletter_job\nWHERE tenant_id_ = 'your_tenant_id'\nGROUP BY proc_def_id_\nORDER BY deadletter_count DESC\nLIMIT 20",
+      "business_scenario": "识别哪些流程定义产生了最多的死信任务，定位设计缺陷或外部依赖问题",
+      "expected_result": "某些流程定义的死信数量异常多，需要优化流程设计或外部接口调用"
+    },
+    {
+      "description": "按异常消息分组统计失败原因（根因分析）",
+      "sql": "SELECT \n  LEFT(exception_msg_, 150) as exception_summary,\n  COUNT(*) as occurrence_count,\n  COUNT(DISTINCT process_instance_id_) as affected_processes,\n  COUNT(DISTINCT proc_def_id_) as affected_definitions,\n  MIN(create_time_) as first_occurrence,\n  MAX(create_time_) as last_occurrence,\n  ARRAY_AGG(DISTINCT element_name_) FILTER (WHERE element_name_ IS NOT NULL) as failing_activities\nFROM act_ru_deadletter_job\nWHERE tenant_id_ = 'your_tenant_id'\nGROUP BY LEFT(exception_msg_, 150)\nORDER BY occurrence_count DESC\nLIMIT 20",
+      "business_scenario": "找出最常见的失败原因，识别需要修复的系统性错误",
+      "expected_result": "可以看到主要的错误类型，如'Connection timeout'、'Service unavailable'、'NullPointerException'等"
+    },
+    {
+      "description": "查询最近24小时新增的死信任务（趋势监控）",
+      "sql": "SELECT \n  id_,\n  type_,\n  element_name_,\n  process_instance_id_,\n  proc_def_id_,\n  LEFT(exception_msg_, 200) as exception_preview,\n  create_time_,\n  ROUND((EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_)) / 60.0)::numeric, 2) as age_minutes\nFROM act_ru_deadletter_job\nWHERE create_time_ >= CURRENT_TIMESTAMP - INTERVAL '24 hours'\n  AND tenant_id_ = 'your_tenant_id'\nORDER BY create_time_ DESC\nLIMIT 100",
+      "business_scenario": "监控死信队列的增长趋势，快速发现新出现的问题",
+      "expected_result": "如果最近24小时新增大量死信，说明刚刚发生了故障"
+    },
+    {
+      "description": "按任务类型统计死信分布",
+      "sql": "SELECT \n  type_,\n  COUNT(*) as deadletter_count,\n  COUNT(DISTINCT proc_def_id_) as affected_definitions,\n  ROUND((100.0 * COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (), 0))::numeric, 2) as percentage,\n  MIN(create_time_) as first_occurrence,\n  MAX(create_time_) as last_occurrence\nFROM act_ru_deadletter_job\nWHERE tenant_id_ = 'your_tenant_id'\nGROUP BY type_\nORDER BY deadletter_count DESC",
+      "business_scenario": "了解哪种类型的任务最容易进入死信队列",
+      "expected_result": "通常 async-continuation 类型占比最高，说明异步服务调用是主要失败点"
+    },
+    {
+      "description": "查询死信任务的完整异常堆栈信息",
+      "sql": "SELECT \n  d.id_,\n  d.element_name_,\n  d.process_instance_id_,\n  d.proc_def_id_,\n  LEFT(d.exception_msg_, 200) as exception_preview,\n  b.name_ as exception_detail_name,\n  ROUND((LENGTH(b.bytes_) / 1024.0)::numeric, 2) as exception_stack_size_kb,\n  d.create_time_\nFROM act_ru_deadletter_job d\nINNER JOIN act_ge_bytearray b ON b.id_ = d.exception_stack_id_\nWHERE d.tenant_id_ = 'your_tenant_id'\nORDER BY d.create_time_ DESC\nLIMIT 50",
+      "business_scenario": "获取详细的异常堆栈信息，辅助开发人员诊断和修复问题",
+      "expected_result": "可以查看完整的堆栈跟踪，定位代码具体哪一行出错"
+    },
+    {
+      "description": "关联流程实例分析死信任务对流程的影响",
+      "sql": "SELECT \n  p.proc_def_id,\n  p.status as process_status,\n  COUNT(DISTINCT p.id) as process_count,\n  COUNT(d.id_) as deadletter_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as avg_process_duration_seconds,\n  ROUND((100.0 * COUNT(d.id_) / NULLIF(COUNT(DISTINCT p.id), 0))::numeric, 2) as deadletter_rate_percentage\nFROM pe_ext_procinst p\nLEFT JOIN act_ru_deadletter_job d ON d.process_instance_id_ = p.id\nWHERE p.start_time >= CURRENT_TIMESTAMP - INTERVAL '7 days'\n  AND p.tenant_id = 'your_tenant_id'\nGROUP BY p.proc_def_id, p.status\nHAVING COUNT(d.id_) > 0\nORDER BY deadletter_count DESC\nLIMIT 20",
+      "business_scenario": "分析死信任务对流程成功率和执行时长的影响",
+      "expected_result": "死信率高的流程通常执行时间更长或状态为失败"
+    },
+    {
+      "description": "对比死信队列与正常任务队列（横向对比）",
+      "sql": "SELECT \n  'Normal Job Queue' as queue_type,\n  COUNT(*) as job_count,\n  COUNT(DISTINCT process_instance_id_) as process_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))))::numeric, 2) as avg_age_seconds\nFROM act_ru_job\nWHERE tenant_id_ = 'your_tenant_id'\nUNION ALL\nSELECT \n  'Dead Letter Queue' as queue_type,\n  COUNT(*) as job_count,\n  COUNT(DISTINCT process_instance_id_) as process_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))))::numeric, 2) as avg_age_seconds\nFROM act_ru_deadletter_job\nWHERE tenant_id_ = 'your_tenant_id'\nORDER BY queue_type",
+      "business_scenario": "对比两个队列的状态，评估系统整体健康度",
+      "expected_result": "健康系统：Normal Job Queue 有适量任务，Dead Letter Queue 接近为0"
+    }
+  ],
+  "ai_analysis_guidelines": [
+    "【强制要求】PostgreSQL 9.6的ROUND函数语法：必须在EXTRACT结果后立即添加::numeric类型转换。正确格式：ROUND(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))::numeric, 2)。对于聚合函数，格式为：ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))))::numeric, 2)",
+    "【强制要求】任何使用ROUND函数的地方，被ROUND的数值表达式必须以::numeric结尾",
+    "生成SQL时，默认添加tenant_id_过滤（除非用户明确说明跨租户分析）",
+    "计算死信年龄统一使用公式：EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))",
+    "死信队列健康标准：total_count = 0（理想状态），< 10（可接受），10-100（需要关注），> 100（严重问题）",
+    "所有死信任务都应该有 exception_msg_ 和 exception_stack_id_，如果为 NULL 说明数据异常",
+    "关联 pe_ext_procinst 表时使用 LEFT JOIN，因为死信任务可能属于已删除的流程实例",
+    "关联 act_ge_bytearray 表获取完整异常堆栈：JOIN 条件为 act_ge_bytearray.id_ = act_ru_deadletter_job.exception_stack_id_",
+    "按异常消息分组时，使用 LEFT(exception_msg_, 150) 截断过长的消息，便于分组统计",
+    "对比 act_ru_job 和 act_ru_deadletter_job 时使用 UNION ALL，了解整体任务队列状态",
+    "聚合查询时，建议添加 HAVING COUNT(*) > 0 过滤没有死信的流程定义",
+    "分析死信趋势时，按时间段统计：最近1小时、24小时、7天、30天",
+    "提供修复建议时，应区分：代码bug（NullPointerException）、外部依赖（Connection timeout）、配置错误（Authentication failed）",
+    "关键性能指标：total_count（总数，目标=0）、avg_age（平均年龄，过长说明长期未处理）、deadletter_rate（死信率，目标<1%）",
+    "死信任务通常需要人工干预：修复代码bug → 重新部署 → 通过API重置任务 → 重试执行"
+  ],
+  "performance_analysis_use_cases": [
+    {
+      "use_case": "系统健康度评估",
+      "description": "评估系统是否存在大量失败任务",
+      "analysis_approach": "统计死信队列总数和增长趋势，如果持续增长说明存在未修复的系统性问题"
+    },
+    {
+      "use_case": "根因分析",
+      "description": "找出最常见的失败原因",
+      "analysis_approach": "按 exception_msg_ 分组统计，识别出最频繁的错误类型，优先修复影响最大的问题"
+    },
+    {
+      "use_case": "流程设计问题诊断",
+      "description": "识别哪些流程设计最不稳定",
+      "analysis_approach": "按 proc_def_id_ 分组统计死信数量，死信率高的流程需要重新设计或加强错误处理"
+    },
+    {
+      "use_case": "外部依赖可靠性评估",
+      "description": "评估外部接口的稳定性",
+      "analysis_approach": "分析异常消息中的超时、连接失败等错误，识别不可靠的外部服务"
+    },
+    {
+      "use_case": "死信清理策略",
+      "description": "决定哪些死信任务可以安全删除",
+      "analysis_approach": "按年龄和流程状态分析，超过30天且流程已完成的死信可以考虑归档或删除"
+    },
+    {
+      "use_case": "故障响应时间分析",
+      "description": "评估团队对死信任务的响应速度",
+      "analysis_approach": "统计死信任务从创建到解决的平均时长，优化故障响应流程"
+    }
+  ]
+}

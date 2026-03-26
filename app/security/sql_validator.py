@@ -105,7 +105,10 @@ class SQLValidator:
     ALLOWED_TABLES = {
         'pe_ext_procinst',
         'pe_ext_actinst',
-        'pe_ext_varinst'
+        'pe_ext_varinst',
+        'act_ru_job',
+        'act_ge_bytearray',
+        'act_ru_deadletter_job'
     }
 
     # Default limits

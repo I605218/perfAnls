@@ -1,0 +1,450 @@
+{
+  "table_name": "act_ru_job",
+  "description": "流程引擎运行时任务表，记录异步任务、定时器任务等待执行的作业信息",
+  "business_context": "这是流程引擎的心脏！当流程使用异步任务（Async Service Task）或定时器（Timer）时，任务会进入 job 表排队等待执行。如果系统性能下降，通常是因为 Job 表积压导致任务调度延迟。Job 表的健康状态直接反映系统的异步处理能力和资源消耗情况。通过分析 Job 表可以发现：任务积压瓶颈、重试风暴、死信队列中的僵尸流程、外部接口超时导致的资源消耗等问题。",
+  "row_count_estimate": "通常在几百到几千条之间，高峰期可能积压上万条。健康系统的 Job 表应该快速流转，长时间积压是性能问题的信号。",
+  "primary_key": "id_",
+  "indexes": [
+    {
+      "name": "act_ru_job_pkey",
+      "type": "PRIMARY KEY",
+      "columns": ["id_"],
+      "description": "主键索引"
+    },
+    {
+      "name": "act_idx_job_process_instance_id",
+      "type": "BTREE",
+      "columns": ["process_instance_id_"],
+      "description": "流程实例ID索引，用于快速查询某个流程的所有 Job，性能分析中常用于关联流程和任务"
+    },
+    {
+      "name": "act_idx_job_execution_id",
+      "type": "BTREE",
+      "columns": ["execution_id_"],
+      "description": "执行实例ID索引，用于查询特定执行环节的任务"
+    },
+    {
+      "name": "act_idx_job_proc_def_id",
+      "type": "BTREE",
+      "columns": ["proc_def_id_"],
+      "description": "流程定义ID索引，用于统计某个流程定义的任务积压情况"
+    },
+    {
+      "name": "act_idx_job_exception_stack_id",
+      "type": "BTREE",
+      "columns": ["exception_stack_id_"],
+      "description": "异常堆栈ID索引，用于快速查询失败的任务"
+    },
+    {
+      "name": "act_idx_job_correlation_id",
+      "type": "BTREE",
+      "columns": ["correlation_id_"],
+      "description": "关联ID索引"
+    },
+    {
+      "name": "act_idx_job_scope",
+      "type": "BTREE",
+      "columns": ["scope_id_", "scope_type_"],
+      "description": "作用域索引，用于查询特定范围的任务"
+    }
+  ],
+  "columns": [
+    {
+      "name": "id_",
+      "type": "varchar(64)",
+      "nullable": false,
+      "description": "任务唯一标识符（主键）",
+      "business_meaning": "每个异步任务或定时器任务的唯一ID",
+      "indexed": true,
+      "sample_values": ["job_001", "job_002"]
+    },
+    {
+      "name": "rev_",
+      "type": "integer",
+      "nullable": true,
+      "description": "版本号（乐观锁）",
+      "business_meaning": "用于并发控制，防止多个执行器同时执行同一个任务",
+      "indexed": false
+    },
+    {
+      "name": "category_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "任务分类",
+      "business_meaning": "标识任务的类别，用于任务调度和管理",
+      "indexed": false,
+      "usage_hint": "可用于按类别统计任务分布"
+    },
+    {
+      "name": "type_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "任务类型",
+      "business_meaning": "定义任务的具体类型",
+      "indexed": false,
+      "possible_values": [
+        {
+          "value": "async-continuation",
+          "description": "异步延续任务 - 异步执行的服务任务",
+          "usage_scenario": "当活动配置为异步执行时产生",
+          "performance_note": "大量此类任务积压表明异步处理能力不足"
+        },
+        {
+          "value": "timer",
+          "description": "定时器任务 - 流程中的定时器事件",
+          "usage_scenario": "Timer Boundary Event、Timer Start Event等",
+          "performance_note": "定时器任务过多可能影响调度性能"
+        },
+        {
+          "value": "message",
+          "description": "消息任务 - 等待消息触发的任务",
+          "usage_scenario": "Message Event相关任务"
+        }
+      ],
+      "usage_hint": "性能分析时，按 type_ 分组可以识别哪种类型的任务最容易积压"
+    },
+    {
+      "name": "lock_exp_time_",
+      "type": "timestamp",
+      "nullable": true,
+      "description": "锁过期时间",
+      "business_meaning": "任务被执行器锁定后的过期时间，过期后其他执行器可以重新获取",
+      "indexed": false,
+      "usage_hint": "如果大量任务的 lock_exp_time_ 已过期但仍未执行，说明执行器可能出现故障或资源不足"
+    },
+    {
+      "name": "lock_owner_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "锁持有者",
+      "business_meaning": "当前执行该任务的执行器标识（通常是 hostname + UUID）",
+      "indexed": false,
+      "usage_hint": "可以统计每个执行器的任务分布，识别负载不均衡问题"
+    },
+    {
+      "name": "exclusive_",
+      "type": "boolean",
+      "nullable": true,
+      "description": "是否独占执行",
+      "business_meaning": "如果为 true，则同一流程实例的其他独占任务必须等待此任务完成",
+      "indexed": false,
+      "usage_hint": "独占任务过多可能导致并发度降低"
+    },
+    {
+      "name": "execution_id_",
+      "type": "varchar(64)",
+      "nullable": true,
+      "description": "执行实例ID",
+      "business_meaning": "关联到 act_ru_execution 表，标识任务所属的执行环节",
+      "indexed": true,
+      "foreign_key": {
+        "table": "act_ru_execution",
+        "column": "id_",
+        "relationship": "many_to_one"
+      }
+    },
+    {
+      "name": "process_instance_id_",
+      "type": "varchar(64)",
+      "nullable": true,
+      "description": "流程实例ID",
+      "business_meaning": "关联到 pe_ext_procinst 表的 id 字段，标识任务所属的流程实例",
+      "indexed": true,
+      "foreign_key": {
+        "table": "pe_ext_procinst",
+        "column": "id",
+        "relationship": "many_to_one"
+      },
+      "usage_hint": "性能分析中最常用的关联字段，用于分析异步任务对流程性能的影响"
+    },
+    {
+      "name": "proc_def_id_",
+      "type": "varchar(64)",
+      "nullable": true,
+      "description": "流程定义ID",
+      "business_meaning": "关联到流程定义表，标识任务所属的流程定义",
+      "indexed": true,
+      "usage_hint": "按流程定义分组统计任务积压情况，识别哪些流程设计导致任务堆积"
+    },
+    {
+      "name": "element_id_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "BPMN元素ID",
+      "business_meaning": "BPMN模型中定义的活动节点ID（如'ServiceTask_1'）",
+      "indexed": false,
+      "usage_hint": "用于定位具体是哪个活动节点产生的任务"
+    },
+    {
+      "name": "element_name_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "BPMN元素名称",
+      "business_meaning": "BPMN模型中定义的活动节点可读名称（如'调用外部接口'）",
+      "indexed": false,
+      "usage_hint": "性能报告中优先显示此名称，比 element_id_ 更易理解"
+    },
+    {
+      "name": "scope_id_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "作用域ID",
+      "business_meaning": "任务的作用域标识，用于多租户或分层管理",
+      "indexed": true
+    },
+    {
+      "name": "sub_scope_id_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "子作用域ID",
+      "business_meaning": "子作用域标识",
+      "indexed": true
+    },
+    {
+      "name": "scope_type_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "作用域类型",
+      "business_meaning": "作用域的类型标识",
+      "indexed": true
+    },
+    {
+      "name": "scope_definition_id_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "作用域定义ID",
+      "business_meaning": "作用域定义的标识",
+      "indexed": true
+    },
+    {
+      "name": "correlation_id_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "关联ID",
+      "business_meaning": "用于关联相关任务或事件",
+      "indexed": true
+    },
+    {
+      "name": "retries_",
+      "type": "integer",
+      "nullable": true,
+      "description": "剩余重试次数",
+      "business_meaning": "任务失败后的剩余重试次数，初始值通常为3，每次失败递减",
+      "indexed": false,
+      "usage_hint": "retries_ = 0 表示任务已进入死信队列（Deadletter），需要人工干预"
+    },
+    {
+      "name": "exception_stack_id_",
+      "type": "varchar(64)",
+      "nullable": true,
+      "description": "异常堆栈ID",
+      "business_meaning": "关联到 act_ge_bytearray 表，存储完整的异常堆栈信息",
+      "indexed": true,
+      "foreign_key": {
+        "table": "act_ge_bytearray",
+        "column": "id_",
+        "relationship": "many_to_one"
+      },
+      "usage_hint": "exception_stack_id_ IS NOT NULL 表示任务执行失败"
+    },
+    {
+      "name": "exception_msg_",
+      "type": "varchar(4000)",
+      "nullable": true,
+      "description": "异常消息",
+      "business_meaning": "任务执行失败时的错误消息摘要（最多4000字符）",
+      "indexed": false,
+      "usage_hint": "按异常消息分组统计可以找出最常见的失败原因"
+    },
+    {
+      "name": "duedate_",
+      "type": "timestamp",
+      "nullable": true,
+      "description": "到期时间",
+      "business_meaning": "任务应该执行的时间点（用于定时器任务）",
+      "indexed": false,
+      "usage_hint": "对比 duedate_ 和 CURRENT_TIMESTAMP 可以找出逾期未执行的任务"
+    },
+    {
+      "name": "repeat_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "重复规则",
+      "business_meaning": "定时器的重复执行规则（Cron表达式或ISO 8601 Duration）",
+      "indexed": false
+    },
+    {
+      "name": "handler_type_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "处理器类型",
+      "business_meaning": "执行该任务的处理器类型（Java类名）",
+      "indexed": false
+    },
+    {
+      "name": "handler_cfg_",
+      "type": "varchar(4000)",
+      "nullable": true,
+      "description": "处理器配置",
+      "business_meaning": "传递给处理器的配置信息（通常是JSON格式）",
+      "indexed": false
+    },
+    {
+      "name": "custom_values_id_",
+      "type": "varchar(64)",
+      "nullable": true,
+      "description": "自定义值ID",
+      "business_meaning": "关联到 act_ge_bytearray 表，存储自定义数据",
+      "indexed": true,
+      "foreign_key": {
+        "table": "act_ge_bytearray",
+        "column": "id_",
+        "relationship": "many_to_one"
+      }
+    },
+    {
+      "name": "create_time_",
+      "type": "timestamp",
+      "nullable": true,
+      "description": "任务创建时间",
+      "business_meaning": "任务进入队列的时间戳",
+      "indexed": false,
+      "usage_hint": "对比 create_time_ 和 CURRENT_TIMESTAMP 可以计算任务等待时长，识别积压问题"
+    },
+    {
+      "name": "tenant_id_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "租户ID",
+      "business_meaning": "多租户环境下的租户标识",
+      "indexed": false,
+      "usage_hint": "生成SQL时，默认添加 tenant_id_ 过滤（除非用户明确说明跨租户分析）"
+    }
+  ],
+  "relationships": [
+    {
+      "type": "many_to_one",
+      "target_table": "pe_ext_procinst",
+      "target_column": "id",
+      "foreign_key": "process_instance_id_",
+      "description": "任务所属的流程实例",
+      "usage_hint": "通过此关联可以分析异步任务对流程整体性能的影响"
+    },
+    {
+      "type": "many_to_one",
+      "target_table": "act_ru_execution",
+      "target_column": "id_",
+      "foreign_key": "execution_id_",
+      "description": "任务所属的执行实例"
+    },
+    {
+      "type": "many_to_one",
+      "target_table": "act_re_procdef",
+      "target_column": "id_",
+      "foreign_key": "proc_def_id_",
+      "description": "任务所属的流程定义"
+    },
+    {
+      "type": "many_to_one",
+      "target_table": "act_ge_bytearray",
+      "target_column": "id_",
+      "foreign_key": "exception_stack_id_",
+      "description": "异常堆栈信息"
+    }
+  ],
+  "common_queries": [
+    {
+      "description": "查询当前任务积压情况（健康检查）",
+      "sql": "SELECT \n  COUNT(*) as total_jobs,\n  COUNT(CASE WHEN lock_owner_ IS NOT NULL THEN 1 END) as locked_jobs,\n  COUNT(CASE WHEN lock_owner_ IS NULL THEN 1 END) as pending_jobs,\n  COUNT(CASE WHEN retries_ = 0 THEN 1 END) as deadletter_jobs,\n  ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))))::numeric, 2) as avg_wait_time_seconds\nFROM act_ru_job\nWHERE tenant_id_ = 'your_tenant_id'",
+      "business_scenario": "系统健康检查：快速了解当前有多少任务在排队、多少被锁定执行、多少进入死信队列",
+      "expected_result": "健康系统：pending_jobs < 100，avg_wait_time < 60秒，deadletter_jobs = 0"
+    },
+    {
+      "description": "查询任务积压 TOP 10 流程定义",
+      "sql": "SELECT \n  proc_def_id_,\n  COUNT(*) as job_count,\n  COUNT(CASE WHEN retries_ = 0 THEN 1 END) as deadletter_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))))::numeric, 2) as avg_wait_time_seconds,\n  MAX(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))) as max_wait_time_seconds\nFROM act_ru_job\nWHERE tenant_id_ = 'your_tenant_id'\n  AND create_time_ >= CURRENT_TIMESTAMP - INTERVAL '1 day'\nGROUP BY proc_def_id_\nHAVING COUNT(*) > 5\nORDER BY job_count DESC\nLIMIT 10",
+      "business_scenario": "识别哪些流程定义产生了最多的异步任务积压，定位设计问题",
+      "expected_result": "某些流程定义的任务数量异常多，需要优化异步任务设计"
+    },
+    {
+      "description": "查询死信队列任务（retries = 0）",
+      "sql": "SELECT \n  id_,\n  type_,\n  process_instance_id_,\n  element_name_,\n  LEFT(exception_msg_, 200) as exception_preview,\n  retries_,\n  create_time_,\n  EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_)) as wait_time_seconds\nFROM act_ru_job\nWHERE retries_ = 0\n  AND tenant_id_ = 'your_tenant_id'\nORDER BY create_time_ DESC\nLIMIT 100",
+      "business_scenario": "找出彻底失败无法推进的僵尸任务，需要人工干预或修复后重试",
+      "expected_result": "理想情况下应为空，如果有记录说明存在系统性错误"
+    },
+    {
+      "description": "按异常消息分组统计失败原因",
+      "sql": "SELECT \n  LEFT(exception_msg_, 100) as exception_summary,\n  COUNT(*) as occurrence_count,\n  COUNT(DISTINCT process_instance_id_) as affected_processes,\n  MIN(create_time_) as first_occurrence,\n  MAX(create_time_) as last_occurrence\nFROM act_ru_job\nWHERE exception_msg_ IS NOT NULL\n  AND tenant_id_ = 'your_tenant_id'\n  AND create_time_ >= CURRENT_TIMESTAMP - INTERVAL '7 days'\nGROUP BY LEFT(exception_msg_, 100)\nORDER BY occurrence_count DESC\nLIMIT 20",
+      "business_scenario": "找出最常见的任务失败原因，识别外部接口问题或配置错误",
+      "expected_result": "可以看到哪些错误最频繁，如'Connection timeout'、'Service unavailable'等"
+    },
+    {
+      "description": "查询长时间未执行的逾期任务",
+      "sql": "SELECT \n  id_,\n  type_,\n  element_name_,\n  process_instance_id_,\n  duedate_,\n  create_time_,\n  ROUND((EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - duedate_)))::numeric, 2) as overdue_seconds,\n  lock_owner_,\n  retries_\nFROM act_ru_job\nWHERE duedate_ < CURRENT_TIMESTAMP\n  AND lock_owner_ IS NULL\n  AND tenant_id_ = 'your_tenant_id'\nORDER BY overdue_seconds DESC\nLIMIT 50",
+      "business_scenario": "找出已经到期但还未执行的任务，可能是调度器故障或资源不足",
+      "expected_result": "健康系统不应有大量逾期任务，有的话说明执行器处理能力不足"
+    },
+    {
+      "description": "统计各任务类型的分布和等待时长",
+      "sql": "SELECT \n  type_,\n  COUNT(*) as job_count,\n  COUNT(CASE WHEN lock_owner_ IS NOT NULL THEN 1 END) as executing_count,\n  COUNT(CASE WHEN retries_ = 0 THEN 1 END) as failed_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))))::numeric, 2) as avg_wait_time_seconds,\n  ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))))::numeric, 2) as p95_wait_time_seconds\nFROM act_ru_job\nWHERE tenant_id_ = 'your_tenant_id'\n  AND create_time_ >= CURRENT_TIMESTAMP - INTERVAL '1 day'\nGROUP BY type_\nORDER BY job_count DESC",
+      "business_scenario": "分析不同类型任务的表现，识别哪种类型最容易积压或失败",
+      "expected_result": "对比 async-continuation、timer 等类型的等待时长和失败率"
+    },
+    {
+      "description": "关联流程实例分析异步任务对性能的影响",
+      "sql": "SELECT \n  p.proc_def_id,\n  COUNT(DISTINCT p.id) as process_count,\n  COUNT(j.id_) as total_jobs,\n  ROUND((AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as avg_process_duration_seconds,\n  ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - j.create_time_))))::numeric, 2) as avg_job_wait_time_seconds,\n  COUNT(CASE WHEN j.retries_ = 0 THEN 1 END) as deadletter_count\nFROM pe_ext_procinst p\nLEFT JOIN act_ru_job j ON j.process_instance_id_ = p.id\nWHERE p.start_time >= CURRENT_TIMESTAMP - INTERVAL '7 days'\n  AND p.end_time IS NOT NULL\n  AND p.tenant_id = 'your_tenant_id'\nGROUP BY p.proc_def_id\nHAVING COUNT(j.id_) > 10\nORDER BY avg_job_wait_time_seconds DESC\nLIMIT 20",
+      "business_scenario": "分析异步任务等待时长与流程执行时长的关系，识别任务调度瓶颈",
+      "expected_result": "任务等待时间长的流程，整体执行时长也会更长"
+    },
+    {
+      "description": "查询重试风暴（频繁失败重试的任务）",
+      "sql": "SELECT \n  element_name_,\n  process_instance_id_,\n  LEFT(exception_msg_, 150) as exception_preview,\n  retries_,\n  create_time_,\n  lock_exp_time_,\n  EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_)) as age_seconds\nFROM act_ru_job\nWHERE retries_ < 3\n  AND retries_ > 0\n  AND exception_msg_ IS NOT NULL\n  AND tenant_id_ = 'your_tenant_id'\n  AND create_time_ >= CURRENT_TIMESTAMP - INTERVAL '1 hour'\nORDER BY create_time_ DESC\nLIMIT 100",
+      "business_scenario": "找出正在重试的失败任务，如果短时间内大量重试说明发生重试风暴，消耗系统资源",
+      "expected_result": "大量重试任务通常意味着外部依赖服务故障"
+    }
+  ],
+  "ai_analysis_guidelines": [
+    "【强制要求】PostgreSQL 9.6的ROUND函数语法：必须在EXTRACT结果后立即添加::numeric类型转换。正确格式：ROUND(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))::numeric, 2)。对于聚合函数，格式为：ROUND((AVG(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))))::numeric, 2)",
+    "【强制要求】任何使用ROUND函数的地方，被ROUND的数值表达式必须以::numeric结尾",
+    "生成SQL时，默认添加tenant_id_过滤（除非用户明确说明跨租户分析）",
+    "时间范围查询优先使用create_time_ >= ...（有利于性能），除非用户要求按到期时间过滤",
+    "计算任务等待时长统一使用公式：EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - create_time_))",
+    "识别任务积压的标准条件：COUNT(*) > 100 OR AVG(wait_time) > 60",
+    "识别死信队列任务：retries_ = 0，这些任务需要人工干预",
+    "识别正在执行的任务：lock_owner_ IS NOT NULL AND lock_exp_time_ > CURRENT_TIMESTAMP",
+    "识别逾期未执行的任务：duedate_ < CURRENT_TIMESTAMP AND lock_owner_ IS NULL",
+    "按类型分组统计时，优先分析 async-continuation 类型（最常见的异步任务）",
+    "关联 pe_ext_procinst 表时使用 LEFT JOIN，因为 Job 可能属于已完成的流程实例",
+    "聚合查询时，建议添加 HAVING COUNT(*) > N 过滤低频数据（N 根据时间范围选择，1小时用5，1天用10）",
+    "分析任务健康状态时，应同时统计：total_jobs（总数）、pending_jobs（等待中）、locked_jobs（执行中）、deadletter_jobs（死信）",
+    "重试次数分析：retries_ = 3（新任务），retries_ < 3（失败后重试），retries_ = 0（彻底失败）",
+    "提供性能建议时，应区分：任务设计问题（异步任务过多）、调度问题（执行器不足）、外部依赖问题（接口超时）",
+    "关键性能指标：avg_wait_time（平均等待时长，正常 < 60秒）、deadletter_count（死信数量，正常 = 0）、job_count（任务积压数，正常 < 100）"
+  ],
+  "performance_analysis_use_cases": [
+    {
+      "use_case": "任务积压诊断",
+      "description": "系统响应变慢，需要检查是否因为异步任务堆积",
+      "analysis_approach": "统计当前 Job 表总数和平均等待时长，如果 total_jobs > 1000 或 avg_wait_time > 120秒，说明调度能力不足"
+    },
+    {
+      "use_case": "死信队列清理",
+      "description": "发现大量僵尸流程无法推进",
+      "analysis_approach": "查询 retries_ = 0 的任务，按 exception_msg_ 分组找出共性原因，修复后可以通过 API 重置重试次数"
+    },
+    {
+      "use_case": "重试风暴告警",
+      "description": "外部接口故障导致大量任务重试，消耗系统资源",
+      "analysis_approach": "查询最近1小时内 retries_ < 3 且 exception_msg_ IS NOT NULL 的任务，如果数量 > 100 说明发生重试风暴"
+    },
+    {
+      "use_case": "执行器负载均衡",
+      "description": "检查各执行器的任务分布是否均衡",
+      "analysis_approach": "按 lock_owner_ 分组统计任务数，如果某个执行器的任务数远超其他，可能需要调整调度策略"
+    },
+    {
+      "use_case": "异步任务性能影响",
+      "description": "分析异步任务对流程整体性能的影响",
+      "analysis_approach": "关联 pe_ext_procinst 表，对比有异步任务和无异步任务的流程执行时长，量化异步调度开销"
+    }
+  ]
+}

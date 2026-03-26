@@ -1,0 +1,206 @@
+{
+  "table_name": "act_ge_bytearray",
+  "description": "流程引擎通用二进制数据存储表，用于存储大字段数据、文件附件、序列化对象等",
+  "business_context": "这是流程引擎的数据存储中心！当流程变量包含大文本（大 JSON）、文件附件或序列化对象时，实际的庞大数据存储在这张表的 bytes_ 字段中，变量表只存储引用ID。数据库 I/O 瓶颈往往来源于对这张表的高频读取。通过分析此表可以发现：哪些流程产生了过大的变量数据、异常堆栈信息、部署资源文件大小等。优化建议通常是将大文件移至对象存储（OSS），流程中仅存储URL引用，大幅减少数据库 I/O 压力。",
+  "row_count_estimate": "数据量取决于业务场景，通常在数千到数万条。如果此表过大（>100GB）会严重影响数据库性能。",
+  "primary_key": "id_",
+  "indexes": [
+    {
+      "name": "act_ge_bytearray_pkey",
+      "type": "PRIMARY KEY",
+      "columns": ["id_"],
+      "description": "主键索引"
+    },
+    {
+      "name": "act_idx_bytearray_depl",
+      "type": "BTREE",
+      "columns": ["deployment_id_"],
+      "description": "部署ID索引，用于查询某个部署包含的资源文件"
+    }
+  ],
+  "columns": [
+    {
+      "name": "id_",
+      "type": "varchar(64)",
+      "nullable": false,
+      "description": "二进制数据唯一标识符（主键）",
+      "business_meaning": "每个大字段数据的唯一ID，被变量表、Job表、部署表等引用",
+      "indexed": true,
+      "sample_values": ["bytearray_001", "bytearray_002"]
+    },
+    {
+      "name": "rev_",
+      "type": "integer",
+      "nullable": true,
+      "description": "版本号（乐观锁）",
+      "business_meaning": "用于并发控制",
+      "indexed": false
+    },
+    {
+      "name": "name_",
+      "type": "varchar(255)",
+      "nullable": true,
+      "description": "数据名称",
+      "business_meaning": "标识此二进制数据的名称，通常是文件名或变量名",
+      "indexed": false,
+      "sample_values": ["invoice.pdf", "largeJsonData", "exceptionStackTrace"],
+      "usage_hint": "可用于识别数据类型和用途，如 .pdf 文件、.json 数据、异常堆栈等"
+    },
+    {
+      "name": "deployment_id_",
+      "type": "varchar(64)",
+      "nullable": true,
+      "description": "部署ID",
+      "business_meaning": "如果此数据属于流程部署（如 BPMN XML、流程图片），则关联到部署表",
+      "indexed": true,
+      "foreign_key": {
+        "table": "act_re_deployment",
+        "column": "id_",
+        "relationship": "many_to_one"
+      },
+      "usage_hint": "deployment_id_ IS NULL 的记录通常是流程运行时产生的变量数据或异常堆栈"
+    },
+    {
+      "name": "bytes_",
+      "type": "bytea",
+      "nullable": true,
+      "description": "实际的二进制数据",
+      "business_meaning": "存储实际的字节数据，可能是文本、JSON、文件、序列化对象、异常堆栈等",
+      "indexed": false,
+      "usage_hint": "性能分析关键字段！使用 LENGTH(bytes_) 计算数据大小，识别大字段数据"
+    },
+    {
+      "name": "generated_",
+      "type": "boolean",
+      "nullable": true,
+      "description": "是否自动生成",
+      "business_meaning": "标识此数据是否由系统自动生成（如流程图片）",
+      "indexed": false
+    }
+  ],
+  "relationships": [
+    {
+      "type": "one_to_many",
+      "target_table": "pe_ext_varinst",
+      "target_column": "value_id",
+      "foreign_key_in_target": "value_id",
+      "description": "变量表通过 value_id 引用此表，存储大字段变量数据",
+      "usage_hint": "这是性能分析中最重要的关联！通过此关联可以分析大变量对流程性能的影响"
+    },
+    {
+      "type": "one_to_many",
+      "target_table": "act_ru_job",
+      "target_column": "exception_stack_id_",
+      "foreign_key_in_target": "exception_stack_id_",
+      "description": "Job表通过 exception_stack_id_ 引用此表，存储完整异常堆栈",
+      "usage_hint": "当任务失败时，详细的异常堆栈存储在此表中"
+    },
+    {
+      "type": "one_to_many",
+      "target_table": "act_ru_job",
+      "target_column": "custom_values_id_",
+      "foreign_key_in_target": "custom_values_id_",
+      "description": "Job表通过 custom_values_id_ 引用此表，存储自定义配置数据"
+    },
+    {
+      "type": "many_to_one",
+      "target_table": "act_re_deployment",
+      "target_column": "id_",
+      "foreign_key": "deployment_id_",
+      "description": "关联到部署表，标识此数据属于哪个部署"
+    }
+  ],
+  "common_queries": [
+    {
+      "description": "查询大字段数据的总体统计（容量健康检查）",
+      "sql": "SELECT \n  COUNT(*) as total_records,\n  ROUND((SUM(LENGTH(bytes_)) / 1024.0 / 1024.0)::numeric, 2) as total_size_mb,\n  ROUND((AVG(LENGTH(bytes_)) / 1024.0)::numeric, 2) as avg_size_kb,\n  ROUND((MAX(LENGTH(bytes_)) / 1024.0 / 1024.0)::numeric, 2) as max_size_mb,\n  COUNT(CASE WHEN LENGTH(bytes_) > 5242880 THEN 1 END) as large_data_count\nFROM act_ge_bytearray\nWHERE deployment_id_ IS NULL",
+      "business_scenario": "容量健康检查：了解运行时产生的大字段数据总量和分布，排除部署资源（BPMN文件等）",
+      "expected_result": "健康系统：total_size < 10GB，avg_size < 500KB，large_data_count < 100"
+    },
+    {
+      "description": "查询最大的 TOP 20 二进制数据记录",
+      "sql": "SELECT \n  id_,\n  name_,\n  deployment_id_,\n  ROUND((LENGTH(bytes_) / 1024.0 / 1024.0)::numeric, 2) as size_mb,\n  generated_\nFROM act_ge_bytearray\nWHERE bytes_ IS NOT NULL\nORDER BY LENGTH(bytes_) DESC\nLIMIT 20",
+      "business_scenario": "找出占用空间最大的数据，识别需要优化的大字段",
+      "expected_result": "可以看到哪些数据最大，如大 JSON、大文件附件等"
+    },
+    {
+      "description": "分析过去30天产生大变量数据的流程（关联变量表和流程表）",
+      "sql": "SELECT \n  p.proc_def_id,\n  COUNT(DISTINCT p.id) as process_count,\n  COUNT(DISTINCT b.id_) as large_variable_count,\n  ROUND((SUM(LENGTH(b.bytes_)) / 1024.0 / 1024.0)::numeric, 2) as total_data_size_mb,\n  ROUND((AVG(LENGTH(b.bytes_)) / 1024.0)::numeric, 2) as avg_variable_size_kb,\n  ROUND((AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as avg_process_duration_seconds\nFROM pe_ext_procinst p\nINNER JOIN pe_ext_varinst v ON v.proc_inst_id = p.id\nINNER JOIN act_ge_bytearray b ON b.id_ = v.value_id\nWHERE p.start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\n  AND p.end_time IS NOT NULL\n  AND b.bytes_ IS NOT NULL\n  AND LENGTH(b.bytes_) > 1048576\nGROUP BY p.proc_def_id\nHAVING COUNT(DISTINCT b.id_) > 5\nORDER BY total_data_size_mb DESC\nLIMIT 20",
+      "business_scenario": "分析哪些流程产生了超过1MB的大变量数据，评估数据存储策略是否需要优化",
+      "expected_result": "识别出数据密集型流程，为优化提供依据（如将大文件移至OSS）"
+    },
+    {
+      "description": "统计大变量对流程性能的影响",
+      "sql": "WITH variable_size_stats AS (\n  SELECT \n    v.proc_inst_id,\n    SUM(LENGTH(b.bytes_)) as total_variable_bytes\n  FROM pe_ext_varinst v\n  INNER JOIN act_ge_bytearray b ON b.id_ = v.value_id\n  WHERE b.bytes_ IS NOT NULL\n  GROUP BY v.proc_inst_id\n)\nSELECT \n  CASE \n    WHEN total_variable_bytes < 102400 THEN '< 100KB'\n    WHEN total_variable_bytes < 1048576 THEN '100KB - 1MB'\n    WHEN total_variable_bytes < 5242880 THEN '1MB - 5MB'\n    ELSE '> 5MB'\n  END as variable_size_range,\n  COUNT(*) as process_count,\n  ROUND((AVG(EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as avg_duration_seconds,\n  ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (p.end_time - p.start_time))))::numeric, 2) as p95_duration_seconds\nFROM variable_size_stats vs\nINNER JOIN pe_ext_procinst p ON p.id = vs.proc_inst_id\nWHERE p.end_time IS NOT NULL\n  AND p.start_time >= CURRENT_TIMESTAMP - INTERVAL '30 days'\nGROUP BY \n  CASE \n    WHEN total_variable_bytes < 102400 THEN '< 100KB'\n    WHEN total_variable_bytes < 1048576 THEN '100KB - 1MB'\n    WHEN total_variable_bytes < 5242880 THEN '1MB - 5MB'\n    ELSE '> 5MB'\n  END\nORDER BY \n  CASE variable_size_range\n    WHEN '< 100KB' THEN 1\n    WHEN '100KB - 1MB' THEN 2\n    WHEN '1MB - 5MB' THEN 3\n    ELSE 4\n  END",
+      "business_scenario": "量化分析：变量数据大小与流程执行时长的关系，证明大变量是否导致性能下降",
+      "expected_result": "通常变量越大，流程执行时间越长（尤其是 > 5MB 的变量）"
+    },
+    {
+      "description": "查询异常堆栈信息（失败任务诊断）",
+      "sql": "SELECT \n  j.id_ as job_id,\n  j.element_name_,\n  j.process_instance_id_,\n  j.retries_,\n  LEFT(j.exception_msg_, 200) as exception_preview,\n  b.name_ as exception_detail_name,\n  ROUND((LENGTH(b.bytes_) / 1024.0)::numeric, 2) as exception_stack_size_kb\nFROM act_ru_job j\nINNER JOIN act_ge_bytearray b ON b.id_ = j.exception_stack_id_\nWHERE j.exception_stack_id_ IS NOT NULL\n  AND j.retries_ = 0\nORDER BY j.create_time_ DESC\nLIMIT 50",
+      "business_scenario": "查询进入死信队列的任务，获取完整异常堆栈以便诊断问题",
+      "expected_result": "可以看到详细的异常信息，帮助定位失败原因"
+    },
+    {
+      "description": "按数据类型统计存储分布",
+      "sql": "SELECT \n  CASE \n    WHEN name_ LIKE '%.pdf' THEN 'PDF文件'\n    WHEN name_ LIKE '%.json' THEN 'JSON数据'\n    WHEN name_ LIKE '%.xml' THEN 'XML文档'\n    WHEN name_ LIKE '%.bpmn%' THEN 'BPMN流程定义'\n    WHEN name_ LIKE 'exception%' THEN '异常堆栈'\n    WHEN deployment_id_ IS NOT NULL THEN '部署资源'\n    ELSE '其他运行时数据'\n  END as data_type,\n  COUNT(*) as record_count,\n  ROUND((SUM(LENGTH(bytes_)) / 1024.0 / 1024.0)::numeric, 2) as total_size_mb,\n  ROUND((AVG(LENGTH(bytes_)) / 1024.0)::numeric, 2) as avg_size_kb,\n  ROUND((MAX(LENGTH(bytes_)) / 1024.0 / 1024.0)::numeric, 2) as max_size_mb\nFROM act_ge_bytearray\nWHERE bytes_ IS NOT NULL\nGROUP BY \n  CASE \n    WHEN name_ LIKE '%.pdf' THEN 'PDF文件'\n    WHEN name_ LIKE '%.json' THEN 'JSON数据'\n    WHEN name_ LIKE '%.xml' THEN 'XML文档'\n    WHEN name_ LIKE '%.bpmn%' THEN 'BPMN流程定义'\n    WHEN name_ LIKE 'exception%' THEN '异常堆栈'\n    WHEN deployment_id_ IS NOT NULL THEN '部署资源'\n    ELSE '其他运行时数据'\n  END\nORDER BY total_size_mb DESC",
+      "business_scenario": "了解数据库中存储了哪些类型的数据，各占用多少空间",
+      "expected_result": "可以看到 PDF、JSON、异常堆栈等各类数据的分布情况"
+    },
+    {
+      "description": "查询可能导致性能问题的超大变量（> 5MB）",
+      "sql": "SELECT \n  v.proc_inst_id,\n  v.name as variable_name,\n  v.type as variable_type,\n  v.category,\n  b.name_ as storage_name,\n  ROUND((LENGTH(b.bytes_) / 1024.0 / 1024.0)::numeric, 2) as size_mb,\n  v.create_time,\n  p.proc_def_id,\n  p.status as process_status,\n  EXTRACT(EPOCH FROM (p.end_time - p.start_time)) as process_duration_seconds\nFROM pe_ext_varinst v\nINNER JOIN act_ge_bytearray b ON b.id_ = v.value_id\nINNER JOIN pe_ext_procinst p ON p.id = v.proc_inst_id\nWHERE LENGTH(b.bytes_) > 5242880\n  AND v.create_time >= CURRENT_TIMESTAMP - INTERVAL '7 days'\nORDER BY LENGTH(b.bytes_) DESC\nLIMIT 100",
+      "business_scenario": "找出最近7天产生的超大变量（> 5MB），这些变量可能严重影响数据库性能",
+      "expected_result": "识别需要优化的大变量，建议迁移到对象存储"
+    },
+    {
+      "description": "统计部署资源 vs 运行时数据的存储占比",
+      "sql": "SELECT \n  CASE WHEN deployment_id_ IS NOT NULL THEN '部署资源' ELSE '运行时数据' END as data_category,\n  COUNT(*) as record_count,\n  ROUND((SUM(LENGTH(bytes_)) / 1024.0 / 1024.0)::numeric, 2) as total_size_mb,\n  ROUND((100.0 * SUM(LENGTH(bytes_)) / NULLIF(SUM(SUM(LENGTH(bytes_))) OVER (), 0))::numeric, 2) as percentage\nFROM act_ge_bytearray\nWHERE bytes_ IS NOT NULL\nGROUP BY CASE WHEN deployment_id_ IS NOT NULL THEN '部署资源' ELSE '运行时数据' END\nORDER BY total_size_mb DESC",
+      "business_scenario": "了解数据库存储的构成：部署资源（相对静态）vs 运行时数据（动态增长）",
+      "expected_result": "如果运行时数据占比过高（> 80%），说明需要优化变量存储策略"
+    }
+  ],
+  "ai_analysis_guidelines": [
+    "【强制要求】PostgreSQL 9.6的ROUND函数语法：必须在表达式后立即添加::numeric类型转换。正确格式：ROUND((expression)::numeric, 2)",
+    "【强制要求】任何使用ROUND函数的地方，被ROUND的数值表达式必须以::numeric结尾",
+    "计算数据大小统一使用：LENGTH(bytes_) 函数，单位转换：/ 1024.0（KB）、/ 1024.0 / 1024.0（MB）、/ 1024.0 / 1024.0 / 1024.0（GB）",
+    "识别大字段数据的阈值：1MB = 1048576 bytes，5MB = 5242880 bytes，10MB = 10485760 bytes",
+    "区分部署资源和运行时数据：deployment_id_ IS NULL 表示运行时产生的数据（变量、异常堆栈）",
+    "关联 pe_ext_varinst 表时，JOIN 条件为：act_ge_bytearray.id_ = pe_ext_varinst.value_id",
+    "关联 act_ru_job 表时，JOIN 条件为：act_ge_bytearray.id_ = act_ru_job.exception_stack_id_ 或 custom_values_id_",
+    "性能分析时，应同时统计：记录数（COUNT）、总大小（SUM）、平均大小（AVG）、最大大小（MAX）",
+    "按数据类型分组时，可以通过 name_ 字段的后缀判断：.pdf, .json, .xml, .bpmn 等",
+    "聚合查询时，建议添加 WHERE bytes_ IS NOT NULL 过滤空数据",
+    "分析大变量影响时，应关联流程表计算执行时长，量化性能影响",
+    "提供优化建议时，应明确指出：超过5MB的变量建议迁移到对象存储（OSS/S3），流程中仅存储URL引用",
+    "关键性能指标：total_size（总容量，正常 < 50GB）、avg_size（平均大小，正常 < 500KB）、large_data_count（超大数据数量，正常 < 100）",
+    "数据增长趋势分析：如果运行时数据持续快速增长，说明需要定期清理历史数据或优化存储策略"
+  ],
+  "performance_analysis_use_cases": [
+    {
+      "use_case": "大变量性能影响分析",
+      "description": "流程执行变慢，怀疑是大变量数据导致",
+      "analysis_approach": "关联 pe_ext_varinst 和 pe_ext_procinst 表，按变量大小分组统计流程平均执行时长，量化大变量对性能的影响"
+    },
+    {
+      "use_case": "存储容量优化",
+      "description": "数据库容量告警，需要识别并清理大数据",
+      "analysis_approach": "统计 act_ge_bytearray 表的总容量和大字段分布，找出 TOP 100 最大的数据，建议迁移到对象存储"
+    },
+    {
+      "use_case": "变量存储策略评估",
+      "description": "评估当前变量存储策略是否合理",
+      "analysis_approach": "按数据类型统计存储分布，对比部署资源 vs 运行时数据，如果运行时数据占比 > 80% 说明需要优化"
+    },
+    {
+      "use_case": "异常诊断",
+      "description": "查询失败任务的详细异常堆栈",
+      "analysis_approach": "关联 act_ru_job 表，通过 exception_stack_id_ 获取完整异常信息，辅助问题定位"
+    },
+    {
+      "use_case": "数据增长趋势预测",
+      "description": "预测数据库存储容量何时会耗尽",
+      "analysis_approach": "按时间段统计数据增长速度，结合业务量预测未来容量需求，提前规划扩容或清理策略"
+    }
+  ]
+}
