@@ -18,6 +18,10 @@ anthropic==0.40.0
 python-dotenv==1.0.1
 httpx==0.28.1
 
+# Gradio 前端
+gradio==4.44.1
+huggingface-hub==0.26.5  # 兼容 gradio 4.44.1
+
 # 开发工具（可选）
 pytest==8.3.5
 pytest-asyncio==0.25.2
