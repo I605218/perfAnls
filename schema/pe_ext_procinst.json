@@ -528,7 +528,7 @@
     "✅ 通用安全强转公式：ROUND((任何聚合表达式)::numeric, 2)",
     "聚合查询时，建议添加HAVING COUNT(*) > N过滤低频数据（N根据时间范围选择，7天用5，30天用10）",
     "结果排序优先使用业务指标（avg_duration, p95_duration, failure_rate），而非记录数量",
-    "使用SPLIT_PART(proc_def_id, ':', 1)提取流程Key，避免版本号干扰聚合结果",
+    "当统计不同流程时，【必须】仅使用 SPLIT_PART(proc_def_id, ':', 1) 作为唯一的聚合和展示字段，【绝对禁止】在 SELECT 或 GROUP BY 中保留原始的 proc_def_id，否则会导致版本号打散聚合结果！",
     "计算分位数使用PERCENTILE_CONT，且同样遵循强转规则：ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (...))::numeric, 2)",
     "JOIN子流程时使用LEFT JOIN，确保父流程数据不丢失（子流程可能已被清理）",
     "提供性能建议时，应区分流程设计问题（如子流程过多）和系统问题（如服务响应慢）"
