@@ -155,6 +155,9 @@ class TextToSQLService:
                     error_message="Failed to get response from Claude API"
                 )
 
+            logger.debug(f"Received response from Claude, length: {len(response)} chars")
+            logger.debug(f"Response preview (first 300 chars): {response[:300]}")
+
             # Step 3: Parse response
             parsed_result = self._parse_claude_response(response)
 
@@ -162,8 +165,10 @@ class TextToSQLService:
                 return SQLGenerationResult(
                     success=False,
                     error_message="Failed to parse Claude response",
-                    raw_response=response
+                    raw_response=response[:1000]  # Include partial response for debugging
                 )
+
+            logger.info(f"Successfully parsed SQL: {parsed_result.get('sql', '')[:100]}...")
 
             # Step 4: Validate SQL if enabled
             validation_result = None
@@ -201,7 +206,7 @@ class TextToSQLService:
                 caveats=parsed_result.get("caveats"),
                 performance_notes=parsed_result.get("performance_notes"),
                 validation_result=validation_result,
-                raw_response=response
+                raw_response=response[:500]  # Include partial for debugging
             )
 
         except Exception as e:
@@ -295,10 +300,30 @@ class TextToSQLService:
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON response: {str(e)}")
-            logger.debug(f"Raw response: {response[:500]}...")
+            logger.error(f"Error at line {e.lineno}, column {e.colno}")
+            logger.error(f"Full response (first 2000 chars):\n{response[:2000]}")
+
+            # Try to extract JSON using regex as fallback
+            try:
+                import re
+                # Find JSON object in the response
+                json_match = re.search(r'\{[\s\S]*\}', response, re.MULTILINE)
+                if json_match:
+                    json_str = json_match.group(0)
+                    logger.info("Attempting to parse extracted JSON block")
+                    parsed = json.loads(json_str)
+
+                    if "sql" in parsed:
+                        logger.info("Successfully extracted and parsed JSON from response")
+                        return parsed
+            except Exception as fallback_error:
+                logger.error(f"Fallback JSON extraction also failed: {str(fallback_error)}")
+
             return None
+
         except Exception as e:
             logger.error(f"Error parsing response: {str(e)}", exc_info=True)
+            logger.error(f"Response preview: {response[:500]}...")
             return None
 
     def explain_validation(self, result: SQLGenerationResult) -> str:

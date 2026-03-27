@@ -299,10 +299,32 @@ class SQLValidator:
 
         # Extract CTE names to exclude them from validation
         cte_names = set()
-        cte_pattern = r'WITH\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+AS'
-        cte_matches = re.findall(cte_pattern, sql, re.IGNORECASE)
-        for cte_name in cte_matches:
-            cte_names.add(cte_name.lower())
+
+        # Pattern 1: WITH cte_name AS (...) - First CTE
+        # Pattern 2: , cte_name AS (...) - Subsequent CTEs
+        # This handles both single and multiple CTEs
+
+        # Find all CTE definitions (including multiple CTEs separated by commas)
+        # Match: WITH cte1 AS (...), cte2 AS (...), cte3 AS (...)
+        cte_pattern = r'\bWITH\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+AS\s*\('
+        first_cte_match = re.search(cte_pattern, sql, re.IGNORECASE)
+
+        if first_cte_match:
+            # Found WITH clause, now extract all CTE names
+            cte_names.add(first_cte_match.group(1).lower())
+
+            # Find subsequent CTEs (after commas)
+            # Pattern: , cte_name AS (
+            subsequent_cte_pattern = r',\s*([a-zA-Z_][a-zA-Z0-9_]*)\s+AS\s*\('
+            subsequent_matches = re.findall(subsequent_cte_pattern, sql, re.IGNORECASE)
+            for cte_name in subsequent_matches:
+                cte_names.add(cte_name.lower())
+
+        # Also extract subquery aliases (they might look like table names)
+        # Pattern: ) AS alias_name
+        subquery_alias_pattern = r'\)\s+AS\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        subquery_aliases = re.findall(subquery_alias_pattern, sql, re.IGNORECASE)
+        subquery_alias_names = set(alias.lower() for alias in subquery_aliases)
 
         # Extract table names from FROM and JOIN clauses
         # Pattern: FROM/JOIN table_name or FROM/JOIN schema.table_name
@@ -319,6 +341,10 @@ class SQLValidator:
             if table_name in cte_names:
                 continue
 
+            # Skip subquery aliases
+            if table_name in subquery_alias_names:
+                continue
+
             found_tables.add(table_name)
 
             # Check against whitelist
@@ -326,7 +352,7 @@ class SQLValidator:
                 issues.append(ValidationIssue(
                     level=SecurityLevel.CRITICAL,
                     message=f"Table '{table_name}' is not in the allowed list. "
-                            f"Allowed tables: {', '.join(self.ALLOWED_TABLES)}"
+                            f"Allowed tables: {', '.join(sorted(self.ALLOWED_TABLES))}"
                 ))
 
         table_count = len(found_tables)

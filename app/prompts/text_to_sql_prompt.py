@@ -241,16 +241,34 @@ You are analyzing SAP Digital Manufacturing Process Engine data stored in Postgr
 
 ## CRITICAL - Security Rules
 1. **ONLY SELECT statements** - Never generate INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE
-2. **Table whitelist** - Only query these tables: pe_ext_procinst, pe_ext_actinst, pe_ext_varinst
+2. **Table whitelist** - Only query these tables: pe_ext_procinst, pe_ext_actinst, pe_ext_varinst, act_ru_job, act_ge_bytearray, act_ru_deadletter_job
 3. **No system tables** - Never access information_schema, pg_catalog, or other system tables
 4. **No dangerous functions** - Avoid EXECUTE, LOAD_FILE, INTO OUTFILE, PG_SLEEP, BENCHMARK
 
+## CRITICAL - PostgreSQL 9.6 Compatibility Rules
+1. **Type casting for ROUND**: Always use `::numeric` cast for EXTRACT results before ROUND
+   - ✅ CORRECT: `ROUND((EXTRACT(EPOCH FROM (end_time - start_time)))::numeric, 2)`
+   - ❌ WRONG: `ROUND(EXTRACT(EPOCH FROM (end_time - start_time)), 2)`
+
+2. **ORDER BY in UNION queries**: After UNION/UNION ALL, ORDER BY can ONLY use column names or column numbers
+   - ✅ CORRECT: `ORDER BY column_name DESC` or `ORDER BY 1, 2 DESC`
+   - ❌ WRONG: `ORDER BY CASE WHEN ... END` or `ORDER BY expression`
+   - **Solution**: If you need conditional ordering, wrap the UNION in a subquery:
+     ```sql
+     SELECT * FROM (
+       SELECT ... UNION ALL SELECT ...
+     ) AS combined
+     ORDER BY CASE WHEN report_section = 'A' THEN metric1 ELSE metric2 END
+     ```
+
+3. **Column type consistency in UNION**: All columns must have exact same types across all SELECT statements
+   - Use NULL::numeric, NULL::bigint, NULL::text for type casting
+
 ## Query Quality Rules
 1. **Always filter by time range** - Use start_time >= ... with indexed columns
-2. **Always add tenant_id filter** - Multi-tenant data requires: WHERE tenant_id = 'xxx'
-3. **Check NULL values** - For duration calculations: end_time IS NOT NULL AND start_time IS NOT NULL
-4. **Standard status filter** - For completed processes: status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')
-5. **Exclude debug data** - Add: AND sub_status NOT IN ('BREAKING', 'SUB_BREAKING')
+2. **Check NULL values** - For duration calculations: end_time IS NOT NULL AND start_time IS NOT NULL
+3. **Standard status filter** - For completed processes: status IN ('COMPLETED', 'COMPLETED_WITH_ERROR')
+4. **Exclude debug data** - Add: AND sub_status NOT IN ('BREAKING', 'SUB_BREAKING')
 
 ## Performance Best Practices
 1. **Use indexed columns** - Start_time, end_time, proc_inst_id, name have indexes
@@ -262,6 +280,8 @@ You are analyzing SAP Digital Manufacturing Process Engine data stored in Postgr
     def _build_output_format_section(self) -> str:
         """Build the output format specification."""
         return """# Output Format
+
+**CRITICAL**: You must respond with ONLY valid JSON. No additional text before or after the JSON object.
 
 You must respond in the following JSON format:
 
@@ -275,23 +295,52 @@ You must respond in the following JSON format:
 }
 ```
 
+## JSON Formatting Rules (IMPORTANT!)
+- All string values must be properly escaped
+- Use \\n for newlines in strings (not actual newlines)
+- Use \\" for quotes inside strings
+- Arrays must use valid JSON array syntax: ["item1", "item2"]
+- Do NOT include any text outside the JSON object
+- Do NOT add comments in the JSON
+- Ensure all brackets and braces are properly matched
+
+## Example of CORRECT JSON formatting:
+```json
+{
+  "sql": "SELECT id, name FROM table WHERE status = 'ACTIVE'",
+  "explanation": "This query retrieves active records.",
+  "reasoning": "Used status filter for performance.",
+  "caveats": ["Assumes 'ACTIVE' is a valid status"],
+  "performance_notes": "Fast query with indexed status column"
+}
+```
+
 ## Explanation Guidelines
 - Start with "This query..." and describe the main purpose
 - Explain any complex logic (CASE statements, subqueries, window functions)
 - Mention which indexes will be used
 - Note any assumptions about data (e.g., "assuming processes are completed")
+- Keep it as a single paragraph or use \\n for line breaks
 
 ## Reasoning Guidelines
 - Explain why you chose specific tables
 - Justify filtering conditions
 - Describe join strategy if applicable
 - Mention any trade-offs made
+- Keep it concise, use \\n for line breaks if needed
 
 ## Caveats Guidelines
 - List data quality assumptions
 - Note edge cases not handled
 - Warn about potential performance issues for large datasets
-- Mention any limitations of the analysis"""
+- Mention any limitations of the analysis
+- Each caveat should be a separate string in the array
+
+## Performance Notes Guidelines
+- Single string describing expected performance
+- Mention index usage
+- Note query complexity
+- Estimate execution time range"""
 
     def _build_examples_section(self) -> str:
         """Build the few-shot examples section."""

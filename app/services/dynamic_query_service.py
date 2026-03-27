@@ -136,6 +136,10 @@ class DynamicQueryService:
         # Claude sometimes forgets to add ::numeric cast
         sql = self._fix_postgresql_round_syntax(sql)
 
+        # Fix PostgreSQL 9.6 UNION ORDER BY compatibility issue
+        # PG 9.6 doesn't allow expressions in ORDER BY after UNION
+        sql = self._fix_union_order_by_syntax(sql)
+
         timeout = timeout or self.query_timeout
         start_time = asyncio.get_event_loop().time()
 
@@ -251,6 +255,75 @@ class DynamicQueryService:
             logger.debug(f"Fixed: {fixed_sql[:200]}...")
 
         return fixed_sql
+
+    def _fix_union_order_by_syntax(self, sql: str) -> str:
+        """
+        Fix PostgreSQL 9.6 UNION ORDER BY compatibility.
+
+        PostgreSQL 9.6 doesn't allow expressions (CASE, functions) in ORDER BY
+        after UNION/UNION ALL. Only column names or column numbers are allowed.
+
+        This method detects problematic patterns and wraps the query in a subquery.
+
+        Args:
+            sql: Original SQL query
+
+        Returns:
+            Fixed SQL query
+        """
+        import re
+
+        sql_upper = sql.upper()
+
+        # Check if query has UNION and ORDER BY
+        has_union = 'UNION' in sql_upper
+        has_order_by = 'ORDER BY' in sql_upper
+
+        if not (has_union and has_order_by):
+            return sql  # No issue
+
+        # Check if ORDER BY comes after UNION (not within a CTE or subquery)
+        # Find position of last UNION (outside of parentheses)
+        union_positions = []
+        order_by_positions = []
+
+        # Simple heuristic: if ORDER BY contains CASE, CAST, or function calls, it's problematic
+        order_by_pattern = r'ORDER\s+BY\s+.*?(CASE\s+WHEN|CAST\(|\w+\()'
+
+        if re.search(order_by_pattern, sql, re.IGNORECASE | re.DOTALL):
+            logger.info("Detected UNION with complex ORDER BY expression - wrapping in subquery")
+
+            # Extract the ORDER BY clause
+            order_by_match = re.search(r'ORDER\s+BY\s+(.+?)(?:LIMIT|OFFSET|$)', sql, re.IGNORECASE | re.DOTALL)
+
+            if order_by_match:
+                order_by_clause = order_by_match.group(0).strip()
+
+                # Remove the ORDER BY from original query
+                sql_without_order = re.sub(r'ORDER\s+BY\s+.+?(?=LIMIT|OFFSET|$)', '', sql, flags=re.IGNORECASE | re.DOTALL).strip()
+
+                # Check if there's a LIMIT clause
+                limit_match = re.search(r'(LIMIT\s+\d+(?:\s+OFFSET\s+\d+)?)\s*$', sql_without_order, re.IGNORECASE)
+
+                if limit_match:
+                    limit_clause = limit_match.group(1)
+                    sql_without_order = re.sub(r'LIMIT\s+\d+(?:\s+OFFSET\s+\d+)?\s*$', '', sql_without_order, flags=re.IGNORECASE).strip()
+                else:
+                    limit_clause = ""
+
+                # Wrap in subquery
+                fixed_sql = f"SELECT * FROM (\n{sql_without_order}\n) AS union_query\n{order_by_clause}"
+
+                if limit_clause:
+                    fixed_sql += f"\n{limit_clause}"
+
+                logger.info("Fixed UNION ORDER BY syntax for PostgreSQL 9.6 compatibility")
+                logger.debug(f"Original SQL: {sql[:200]}...")
+                logger.debug(f"Fixed SQL: {fixed_sql[:200]}...")
+
+                return fixed_sql
+
+        return sql
 
     def _format_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """
