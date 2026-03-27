@@ -114,6 +114,9 @@ class AIAnalysisService:
                 user_query, sql, results, context
             )
 
+            logger.debug(f"System prompt length: {len(system_prompt)} chars")
+            logger.debug(f"User prompt length: {len(user_prompt)} chars")
+
             # Call Claude API
             response = self._call_claude_api(system_prompt, user_prompt)
 
@@ -123,13 +126,18 @@ class AIAnalysisService:
                     error_message="Failed to get response from Claude API"
                 )
 
+            logger.debug(f"Claude response length: {len(response)} chars")
+            logger.debug(f"Claude response preview: {response[:300]}...")
+
             # Parse response
             parsed_result = self._parse_response(response)
 
             if not parsed_result:
+                # Log the full response for debugging
+                logger.error(f"Failed to parse response. Full response:\n{response}")
                 return AnalysisResult(
                     success=False,
-                    error_message="Failed to parse analysis response"
+                    error_message="Failed to parse analysis response. The AI response was not in valid JSON format."
                 )
 
             logger.info("Analysis completed successfully")
@@ -281,10 +289,19 @@ Respond in JSON format:
                 parts.append(json.dumps(sample_results, indent=2, default=str))
                 parts.append("```")
         else:
-            parts.append("No data returned (empty result set)")
+            parts.append("")
+            parts.append("⚠️ **Empty Result Set**: The query returned no data.")
+            parts.append("")
+            parts.append("**Important**: When analyzing empty results, focus on:")
+            parts.append("- Why the query might return no data (data availability, time range, filters)")
+            parts.append("- Whether this is expected or indicates an issue")
+            parts.append("- What actions the user should take (expand time range, check data source, verify filters)")
+            parts.append("- Provide meaningful insights even with zero rows")
 
         parts.append("")
         parts.append("Please analyze these results and provide insights in the specified JSON format.")
+        parts.append("")
+        parts.append("**Remember**: Even with empty results, provide valuable analysis about what this means and what to do next.")
 
         return "\n".join(parts)
 
@@ -337,12 +354,40 @@ Respond in JSON format:
             for field in required_fields:
                 if field not in parsed:
                     logger.warning(f"Response missing '{field}' field")
+                    # Provide default empty value for missing fields
+                    if field == "key_findings" or field == "recommendations":
+                        parsed[field] = []
+                    else:
+                        parsed[field] = ""
+
+            # Ensure summary field exists
+            if "summary" not in parsed:
+                parsed["summary"] = "Analysis completed"
+
+            # Ensure visualization_suggestions exists
+            if "visualization_suggestions" not in parsed:
+                parsed["visualization_suggestions"] = []
 
             return parsed
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON response: {str(e)}")
-            logger.debug(f"Raw response: {response[:500]}...")
+            logger.error(f"Raw response (first 1000 chars): {response[:1000]}")
+
+            # Try to extract JSON from mixed content
+            try:
+                # Sometimes Claude wraps JSON in explanatory text
+                # Try to find JSON block using regex
+                import re
+                json_match = re.search(r'\{[\s\S]*\}', response)
+                if json_match:
+                    json_str = json_match.group(0)
+                    parsed = json.loads(json_str)
+                    logger.info("Successfully extracted JSON from mixed content")
+                    return parsed
+            except:
+                pass
+
             return None
         except Exception as e:
             logger.error(f"Error parsing response: {str(e)}", exc_info=True)
