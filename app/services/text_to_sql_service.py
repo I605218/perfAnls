@@ -158,6 +158,35 @@ class TextToSQLService:
             logger.debug(f"Received response from Claude, length: {len(response)} chars")
             logger.debug(f"Response preview (first 300 chars): {response[:300]}")
 
+            # Check if response contains a scope error before parsing
+            if "SCOPE_ERROR" in response:
+                logger.warning("Claude rejected query due to scope")
+                # Try to extract the error message
+                try:
+                    response_stripped = response.strip()
+                    if response_stripped.startswith("```json"):
+                        response_stripped = response_stripped[7:]
+                    if response_stripped.startswith("```"):
+                        response_stripped = response_stripped[3:]
+                    if response_stripped.endswith("```"):
+                        response_stripped = response_stripped[:-3]
+                    response_stripped = response_stripped.strip()
+
+                    error_data = json.loads(response_stripped)
+                    error_msg = error_data.get("message", "Query is not related to process engine analysis")
+
+                    return SQLGenerationResult(
+                        success=False,
+                        error_message=error_msg,
+                        raw_response=response[:1000]
+                    )
+                except:
+                    return SQLGenerationResult(
+                        success=False,
+                        error_message="Query is not related to process engine performance analysis. Please ask questions about process execution, performance metrics, or failure analysis.",
+                        raw_response=response[:1000]
+                    )
+
             # Step 3: Parse response
             parsed_result = self._parse_claude_response(response)
 
@@ -267,6 +296,13 @@ class TextToSQLService:
           "performance_notes": "..."
         }
 
+        OR (for scope errors):
+        {
+          "error": "SCOPE_ERROR",
+          "message": "...",
+          "examples": [...]
+        }
+
         Args:
             response: Raw response text from Claude
 
@@ -291,7 +327,13 @@ class TextToSQLService:
             # Parse JSON
             parsed = json.loads(response)
 
-            # Validate required fields
+            # Check if it's a scope error (invalid query)
+            if "error" in parsed and parsed.get("error") == "SCOPE_ERROR":
+                logger.warning(f"Query rejected due to scope: {parsed.get('message')}")
+                # Return None to trigger error handling, but set a specific error
+                return None
+
+            # Validate required fields for normal responses
             if "sql" not in parsed:
                 logger.error("Response missing 'sql' field")
                 return None
@@ -312,6 +354,11 @@ class TextToSQLService:
                     json_str = json_match.group(0)
                     logger.info("Attempting to parse extracted JSON block")
                     parsed = json.loads(json_str)
+
+                    # Check for scope error in extracted JSON
+                    if "error" in parsed and parsed.get("error") == "SCOPE_ERROR":
+                        logger.warning("Extracted JSON contains scope error")
+                        return None
 
                     if "sql" in parsed:
                         logger.info("Successfully extracted and parsed JSON from response")
