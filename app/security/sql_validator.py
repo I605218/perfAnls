@@ -297,6 +297,35 @@ class SQLValidator:
         issues = []
         sql_upper = sql.upper()
 
+        # CRITICAL FIX: Remove SQL functions that contain FROM keyword
+        # to avoid misidentifying function arguments as table names
+        # Example: EXTRACT(EPOCH FROM start_time) -> EXTRACT_REMOVED
+        sql_cleaned = sql
+
+        # Remove EXTRACT(...) function calls
+        sql_cleaned = re.sub(
+            r'EXTRACT\s*\([^)]+\)',
+            'EXTRACT_REMOVED',
+            sql_cleaned,
+            flags=re.IGNORECASE
+        )
+
+        # Remove DATE_TRUNC(...) function calls
+        sql_cleaned = re.sub(
+            r'DATE_TRUNC\s*\([^)]+\)',
+            'DATE_TRUNC_REMOVED',
+            sql_cleaned,
+            flags=re.IGNORECASE
+        )
+
+        # Remove SUBSTRING(...FROM...) function calls
+        sql_cleaned = re.sub(
+            r'SUBSTRING\s*\([^)]+\)',
+            'SUBSTRING_REMOVED',
+            sql_cleaned,
+            flags=re.IGNORECASE
+        )
+
         # Extract CTE names to exclude them from validation
         cte_names = set()
 
@@ -307,7 +336,7 @@ class SQLValidator:
         # Find all CTE definitions (including multiple CTEs separated by commas)
         # Match: WITH cte1 AS (...), cte2 AS (...), cte3 AS (...)
         cte_pattern = r'\bWITH\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+AS\s*\('
-        first_cte_match = re.search(cte_pattern, sql, re.IGNORECASE)
+        first_cte_match = re.search(cte_pattern, sql_cleaned, re.IGNORECASE)
 
         if first_cte_match:
             # Found WITH clause, now extract all CTE names
@@ -316,21 +345,21 @@ class SQLValidator:
             # Find subsequent CTEs (after commas)
             # Pattern: , cte_name AS (
             subsequent_cte_pattern = r',\s*([a-zA-Z_][a-zA-Z0-9_]*)\s+AS\s*\('
-            subsequent_matches = re.findall(subsequent_cte_pattern, sql, re.IGNORECASE)
+            subsequent_matches = re.findall(subsequent_cte_pattern, sql_cleaned, re.IGNORECASE)
             for cte_name in subsequent_matches:
                 cte_names.add(cte_name.lower())
 
         # Also extract subquery aliases (they might look like table names)
         # Pattern: ) AS alias_name
         subquery_alias_pattern = r'\)\s+AS\s+([a-zA-Z_][a-zA-Z0-9_]*)'
-        subquery_aliases = re.findall(subquery_alias_pattern, sql, re.IGNORECASE)
+        subquery_aliases = re.findall(subquery_alias_pattern, sql_cleaned, re.IGNORECASE)
         subquery_alias_names = set(alias.lower() for alias in subquery_aliases)
 
         # Extract table names from FROM and JOIN clauses
         # Pattern: FROM/JOIN table_name or FROM/JOIN schema.table_name
         # But exclude table aliases (table_name alias_name)
         table_pattern = r'(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)'
-        matches = re.findall(table_pattern, sql, re.IGNORECASE)
+        matches = re.findall(table_pattern, sql_cleaned, re.IGNORECASE)
 
         found_tables = set()
         for match in matches:
