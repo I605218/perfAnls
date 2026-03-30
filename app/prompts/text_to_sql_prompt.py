@@ -297,12 +297,45 @@ You are analyzing SAP Digital Manufacturing Process Engine data stored in Postgr
    - ✅ CORRECT: `SELECT CASE WHEN x > 10 THEN 'A' END as category ... GROUP BY CASE WHEN x > 10 THEN 'A' END`
    - ❌ WRONG: `SELECT CASE WHEN x > 10 THEN 'A' END as category ... GROUP BY category`
 
-3. **ORDER BY after GROUP BY**: Can use column names, numbers, or full expressions
-   - ✅ CORRECT: `ORDER BY 1` or `ORDER BY CASE WHEN category_column = 'A' THEN 1 END`
-   - ❌ WRONG: `ORDER BY CASE alias_defined_in_select WHEN 'A' ...` (wrong CASE syntax)
-   - **Note**: Use `CASE WHEN x = 'A' THEN 1` not `CASE x WHEN 'A' THEN 1` for consistency
+3. **For categorization queries, use 2-step CTE pattern**: PostgreSQL 9.6 has strict GROUP BY rules
+   - **Problem**: Complex CASE expressions in GROUP BY cause errors
+   - ✅ **SOLUTION**: Calculate category in CTE first, then GROUP BY the category column
+   - **2-Step CTE Pattern** (MANDATORY for categorization):
+     ```sql
+     -- Step 1: Calculate raw values
+     WITH raw_calc AS (
+       SELECT id, EXTRACT(EPOCH FROM (end_time - start_time)) as duration_seconds
+       FROM pe_ext_procinst
+       WHERE end_time IS NOT NULL AND start_time IS NOT NULL
+     ),
+     -- Step 2: Add category as a column
+     categorized AS (
+       SELECT
+         duration_seconds,
+         CASE
+           WHEN duration_seconds < 10 THEN 'Fast'
+           WHEN duration_seconds < 60 THEN 'Medium'
+           ELSE 'Slow'
+         END as duration_category
+       FROM raw_calc
+     )
+     -- Step 3: Group by the category column (not CASE expression!)
+     SELECT duration_category, COUNT(*), AVG(duration_seconds)::numeric
+     FROM categorized
+     GROUP BY duration_category
+     ORDER BY duration_category
+     ```
+   - **Why this works**: Category is a real column in the CTE, so GROUP BY and ORDER BY can reference it directly
 
-4. **ORDER BY in UNION queries**: After UNION/UNION ALL, ORDER BY can ONLY use column names or column numbers
+4. **ORDER BY after GROUP BY**: Prefer using column numbers for simplicity
+   - ✅ CORRECT: `ORDER BY 1, 2 DESC` (order by first column, then second descending)
+   - ✅ CORRECT: `ORDER BY COUNT(*) DESC` (order by actual aggregate function)
+   - ✅ CORRECT: Repeat the full CASE expression if needed (same as in SELECT)
+   - ❌ WRONG: `ORDER BY alias_name` (aliases from SELECT may not work in all contexts)
+   - ❌ WRONG: `ORDER BY CASE WHEN alias_from_select = 'value' THEN 1 END` (cannot use aliases inside CASE WHEN)
+   - **Best Practice**: Always use column position numbers (1, 2, 3...) after GROUP BY - it's the safest and clearest approach
+
+5. **ORDER BY in UNION queries**: After UNION/UNION ALL, ORDER BY can ONLY use column names or column numbers
    - ✅ CORRECT: `ORDER BY column_name DESC` or `ORDER BY 1, 2 DESC`
    - ❌ WRONG: `ORDER BY CASE WHEN ... END` or `ORDER BY expression`
    - **Solution**: If you need conditional ordering, wrap the UNION in a subquery:
@@ -313,7 +346,7 @@ You are analyzing SAP Digital Manufacturing Process Engine data stored in Postgr
      ORDER BY CASE WHEN report_section = 'A' THEN metric1 ELSE metric2 END
      ```
 
-5. **Column type consistency in UNION**: All columns must have exact same types across all SELECT statements
+6. **Column type consistency in UNION**: All columns must have exact same types across all SELECT statements
    - Use NULL::numeric, NULL::bigint, NULL::text for type casting
 
 ## Query Quality Rules
@@ -346,6 +379,56 @@ You must respond in the following JSON format:
   "performance_notes": "Expected query performance and optimization hints"
 }
 ```
+
+## SQL Syntax Reminders (Review Before Generating!)
+**BEFORE you write the SQL**, remember these PostgreSQL 9.6 rules:
+
+### For Categorization Queries (CRITICAL PATTERN!)
+When user asks to "classify/categorize/分类" by calculated values (duration, size, etc.):
+
+**ALWAYS use this exact 2-step CTE pattern**:
+```sql
+-- Step 1: Calculate the raw value
+WITH raw_calc AS (
+  SELECT
+    id,
+    EXTRACT(EPOCH FROM (end_time - start_time)) as duration_seconds
+  FROM pe_ext_procinst
+  WHERE end_time IS NOT NULL AND start_time IS NOT NULL
+),
+-- Step 2: Add the category in a second CTE
+categorized AS (
+  SELECT
+    id,
+    duration_seconds,
+    CASE
+      WHEN duration_seconds < 10 THEN 'Fast (<10s)'
+      WHEN duration_seconds >= 10 AND duration_seconds < 60 THEN 'Medium (10-60s)'
+      ELSE 'Slow (>60s)'
+    END as duration_category
+  FROM raw_calc
+)
+-- Step 3: Group by the pre-calculated category
+SELECT
+  duration_category,
+  COUNT(*) as count,
+  ROUND(AVG(duration_seconds)::numeric, 2) as avg_duration
+FROM categorized
+GROUP BY duration_category
+ORDER BY duration_category
+```
+
+**Why this pattern?**
+- ✅ Category is already calculated in CTE, so GROUP BY duration_category works
+- ✅ ORDER BY can use the category column directly (no CASE WHEN needed)
+- ✅ Avoids all PostgreSQL 9.6 GROUP BY strict mode issues
+
+**Key Rules**:
+1. ✅ Calculate category BEFORE GROUP BY (in CTE)
+2. ✅ GROUP BY the category column name directly
+3. ✅ ORDER BY the category column name or use ORDER BY 1
+4. ❌ NEVER put CASE WHEN in GROUP BY for calculated fields
+5. ❌ NEVER use columns from CTE in ORDER BY CASE WHEN if they're not in GROUP BY
 
 ## JSON Formatting Rules (IMPORTANT!)
 - All string values must be properly escaped
