@@ -140,6 +140,10 @@ class DynamicQueryService:
         # PG 9.6 doesn't allow expressions in ORDER BY after UNION
         sql = self._fix_union_order_by_syntax(sql)
 
+        # Fix PostgreSQL 9.6 GROUP BY + ORDER BY alias reference issue
+        # PG 9.6 doesn't allow ORDER BY to reference aliases defined in SELECT after GROUP BY
+        sql = self._fix_order_by_alias_reference(sql)
+
         timeout = timeout or self.query_timeout
         start_time = asyncio.get_event_loop().time()
 
@@ -324,6 +328,139 @@ class DynamicQueryService:
                 return fixed_sql
 
         return sql
+
+    def _fix_order_by_alias_reference(self, sql: str) -> str:
+        """
+        Fix PostgreSQL 9.6 ORDER BY alias reference issue.
+
+        PostgreSQL 9.6 doesn't allow ORDER BY to reference column aliases
+        when there's a GROUP BY clause and the ORDER BY contains expressions
+        that reference those aliases.
+
+        Problem pattern:
+        SELECT CASE ... END as alias, ...
+        FROM ...
+        GROUP BY CASE ... END
+        ORDER BY CASE WHEN alias = 'value' THEN 1 ...  -- ERROR: alias not found
+
+        Solution: Replace alias references in ORDER BY CASE with column position numbers.
+
+        Args:
+            sql: Original SQL query
+
+        Returns:
+            Fixed SQL query
+        """
+        import re
+
+        sql_upper = sql.upper()
+
+        # Check if query has GROUP BY and ORDER BY
+        has_group_by = 'GROUP BY' in sql_upper
+        has_order_by = 'ORDER BY' in sql_upper
+
+        if not (has_group_by and has_order_by):
+            return sql  # No issue
+
+        # Check if ORDER BY contains CASE with column reference
+        order_by_pattern = r'ORDER\s+BY\s+CASE\s+WHEN\s+(\w+)\s*='
+        order_by_match = re.search(order_by_pattern, sql, re.IGNORECASE)
+
+        if not order_by_match:
+            return sql  # No problematic pattern
+
+        potential_alias = order_by_match.group(1)
+
+        # Check if this alias is defined in SELECT
+        # Pattern: ... as alias_name, ...
+        select_alias_pattern = rf'\s+[aA][sS]\s+{potential_alias}[\s,]'
+        if not re.search(select_alias_pattern, sql):
+            return sql  # Not an alias reference, it's a real column
+
+        logger.info(f"Detected ORDER BY referencing SELECT alias '{potential_alias}' after GROUP BY")
+
+        # Strategy: Replace the ORDER BY CASE expression with column position number
+        # Find the position of this alias in SELECT clause
+
+        # Extract SELECT clause
+        select_match = re.search(r'SELECT\s+(.*?)\s+FROM', sql, re.IGNORECASE | re.DOTALL)
+        if not select_match:
+            return sql
+
+        select_clause = select_match.group(1)
+
+        # Find column position (1-indexed)
+        # Split by comma, but be careful with nested CASE/functions
+        columns = []
+        paren_depth = 0
+        current_col = []
+
+        for char in select_clause:
+            if char == '(':
+                paren_depth += 1
+            elif char == ')':
+                paren_depth -= 1
+            elif char == ',' and paren_depth == 0:
+                columns.append(''.join(current_col).strip())
+                current_col = []
+                continue
+            current_col.append(char)
+
+        if current_col:
+            columns.append(''.join(current_col).strip())
+
+        # Find which column has this alias
+        alias_position = None
+        for i, col in enumerate(columns, 1):
+            if re.search(rf'\s+[aA][sS]\s+{potential_alias}[\s]*$', col):
+                alias_position = i
+                break
+
+        if alias_position is None:
+            logger.warning(f"Could not find position of alias '{potential_alias}', skipping fix")
+            return sql
+
+        logger.info(f"Found alias '{potential_alias}' at position {alias_position}")
+
+        # Replace ORDER BY CASE expression
+        # Find the complete ORDER BY CASE expression
+        order_by_start = re.search(r'ORDER\s+BY\s+CASE', sql, re.IGNORECASE)
+        if not order_by_start:
+            return sql
+
+        start_pos = order_by_start.start()
+        # Find the END keyword that closes this CASE
+        case_depth = 0
+        end_pos = None
+
+        for i in range(order_by_start.end(), len(sql)):
+            word_match = re.match(r'\b(CASE|END)\b', sql[i:], re.IGNORECASE)
+            if word_match:
+                word = word_match.group(1).upper()
+                if word == 'CASE':
+                    case_depth += 1
+                elif word == 'END':
+                    if case_depth == 0:
+                        end_pos = i + 3  # After 'END'
+                        break
+                    else:
+                        case_depth -= 1
+
+        if end_pos is None:
+            logger.warning("Could not find matching END for ORDER BY CASE, skipping fix")
+            return sql
+
+        # Replace the CASE expression with column position
+        order_by_clause = sql[start_pos:end_pos]
+        simple_order = f"ORDER BY {alias_position}"
+
+        fixed_sql = sql[:start_pos] + simple_order + sql[end_pos:]
+
+        logger.info("Fixed ORDER BY alias reference for PostgreSQL 9.6 compatibility")
+        logger.debug(f"Original ORDER BY: {order_by_clause}")
+        logger.debug(f"Fixed ORDER BY: {simple_order}")
+
+        return fixed_sql
 
     def _format_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """
