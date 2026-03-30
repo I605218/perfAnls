@@ -61,7 +61,7 @@ class SlowProcessAnalysisResponse(BaseModel):
                 },
                 "ai_insights": {
                     "analysis": "## 性能瓶颈识别\n...",
-                    "model": "claude-sonnet-4-6",
+                    "model": "claude-haiku-4-5",
                     "usage": {"input_tokens": 1500, "output_tokens": 2000}
                 }
             }
@@ -96,7 +96,7 @@ class FrequencyAnalysisResponse(BaseModel):
                 },
                 "ai_insights": {
                     "analysis": "## 执行模式分析\n...",
-                    "model": "claude-sonnet-4-6",
+                    "model": "claude-haiku-4-5",
                     "usage": {"input_tokens": 1200, "output_tokens": 1800}
                 }
             }

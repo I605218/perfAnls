@@ -59,7 +59,7 @@ class AIAnalysisService:
         self,
         api_key: str,
         base_url: Optional[str] = None,
-        model: str = "claude-sonnet-4-6",
+        model: str = "claude-haiku-4-5",
         max_tokens: int = 4096,
         temperature: float = 0.3
     ):
@@ -201,7 +201,9 @@ You are an expert in analyzing SAP Digital Manufacturing Process Engine performa
 
 ## Output Format
 
-Respond in JSON format:
+**CRITICAL**: You MUST respond with ONLY valid JSON. No additional text before or after the JSON object.
+
+Respond in this exact JSON format:
 ```json
 {
   "summary": "One-sentence executive summary",
@@ -227,6 +229,15 @@ Respond in JSON format:
   ]
 }
 ```
+
+## JSON Formatting Rules (CRITICAL!)
+- All string values must be properly escaped
+- Use \\n for newlines in strings (not actual newlines)
+- Use \\" for quotes inside strings
+- Arrays must use valid JSON array syntax
+- Do NOT include any text outside the JSON object
+- Do NOT add markdown code blocks around the JSON
+- Ensure all brackets and braces are properly matched
 
 ## Important Guidelines
 - Be concise but insightful
@@ -334,27 +345,138 @@ Respond in JSON format:
             return None
 
     def _parse_response(self, response: str) -> Optional[Dict[str, Any]]:
-        """Parse Claude's JSON response."""
+        """Parse Claude's JSON response with robust error handling."""
         try:
-            # Remove markdown code blocks if present
-            response = response.strip()
-            if response.startswith("```json"):
-                response = response[7:]
-            if response.startswith("```"):
-                response = response[3:]
-            if response.endswith("```"):
-                response = response[:-3]
+            # Step 1: Clean the response
             response = response.strip()
 
-            # Parse JSON
-            parsed = json.loads(response)
+            # Step 2: Remove ALL markdown code blocks (more aggressive)
+            # Handle cases like "```json\n{...}\n```" or "```\n{...}\n```"
+            import re
 
-            # Validate required fields
+            # Remove markdown code block markers
+            response = re.sub(r'^```json\s*', '', response, flags=re.IGNORECASE | re.MULTILINE)
+            response = re.sub(r'^```\s*', '', response, flags=re.MULTILINE)
+            response = re.sub(r'\s*```\s*$', '', response, flags=re.MULTILINE)
+
+            response = response.strip()
+
+            # Step 3: Try to extract JSON using multiple strategies
+            parsed = None
+            parse_method = None
+
+            # Strategy 1: Direct parse
+            try:
+                parsed = json.loads(response)
+                parse_method = "direct"
+                logger.info("Successfully parsed JSON (direct)")
+            except json.JSONDecodeError as e:
+                logger.debug(f"Direct parse failed: {str(e)} at line {e.lineno}, col {e.colno}")
+
+            # Strategy 2: Extract first complete JSON object using brace matching
+            if parsed is None:
+                try:
+                    # Find the first '{' and matching '}'
+                    start_idx = response.find('{')
+                    if start_idx != -1:
+                        # Count braces to find matching closing brace
+                        brace_count = 0
+                        end_idx = -1
+                        in_string = False
+                        escape_next = False
+
+                        for i in range(start_idx, len(response)):
+                            char = response[i]
+
+                            # Handle string escaping
+                            if escape_next:
+                                escape_next = False
+                                continue
+
+                            if char == '\\':
+                                escape_next = True
+                                continue
+
+                            # Track if we're inside a string
+                            if char == '"':
+                                in_string = not in_string
+                                continue
+
+                            # Only count braces outside strings
+                            if not in_string:
+                                if char == '{':
+                                    brace_count += 1
+                                elif char == '}':
+                                    brace_count -= 1
+                                    if brace_count == 0:
+                                        end_idx = i + 1
+                                        break
+
+                        if end_idx != -1:
+                            json_str = response[start_idx:end_idx]
+                            parsed = json.loads(json_str)
+                            parse_method = "brace_matching"
+                            logger.info(f"Successfully extracted JSON using brace matching")
+                            if len(response) > end_idx:
+                                logger.warning(f"Removed {len(response) - end_idx} extra characters after JSON")
+                except Exception as e:
+                    logger.debug(f"Brace matching extraction failed: {str(e)}")
+
+            # Strategy 3: Regex extraction (fallback)
+            if parsed is None:
+                try:
+                    json_match = re.search(r'\{[\s\S]*\}', response, re.DOTALL)
+                    if json_match:
+                        json_str = json_match.group(0)
+                        parsed = json.loads(json_str)
+                        parse_method = "regex"
+                        logger.info("Successfully extracted JSON using regex")
+                except Exception as e:
+                    logger.debug(f"Regex extraction failed: {str(e)}")
+
+            # If all strategies failed
+            if parsed is None:
+                logger.error(f"Failed to parse JSON response: All strategies failed")
+                logger.error(f"Response length: {len(response)} chars")
+                logger.error(f"Response preview (first 500 chars): {response[:500]}")
+                logger.error(f"Response preview (last 500 chars): {response[-500:]}")
+                # Save full response to temp file for debugging
+                try:
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                        f.write(response)
+                        logger.error(f"Full response saved to: {f.name}")
+                except:
+                    pass
+                return None
+
+            logger.info(f"JSON parsed successfully using method: {parse_method}")
+
+            # Step 4: Clean up extra fields that shouldn't be there
+            # (Haiku sometimes adds fields like "interpretation_continued")
+            extra_fields = []
+            expected_fields = {"summary", "key_findings", "interpretation", "recommendations", "visualization_suggestions"}
+            for field in list(parsed.keys()):
+                if field not in expected_fields:
+                    extra_fields.append(field)
+
+            if extra_fields:
+                logger.warning(f"Removing unexpected fields from response: {extra_fields}")
+                # Merge extra interpretation fields into main interpretation
+                for field in extra_fields:
+                    if 'interpretation' in field.lower() and isinstance(parsed[field], str):
+                        if 'interpretation' in parsed:
+                            parsed['interpretation'] += "\n\n" + parsed[field]
+                        else:
+                            parsed['interpretation'] = parsed[field]
+                    # Remove the extra field
+                    del parsed[field]
+
+            # Step 5: Validate and normalize required fields
             required_fields = ["key_findings", "interpretation", "recommendations"]
             for field in required_fields:
                 if field not in parsed:
-                    logger.warning(f"Response missing '{field}' field")
-                    # Provide default empty value for missing fields
+                    logger.warning(f"Response missing '{field}' field, adding default")
                     if field == "key_findings" or field == "recommendations":
                         parsed[field] = []
                     else:
@@ -364,33 +486,30 @@ Respond in JSON format:
             if "summary" not in parsed:
                 parsed["summary"] = "Analysis completed"
 
-            # Ensure visualization_suggestions exists
+            # Ensure visualization_suggestions exists and is a list
             if "visualization_suggestions" not in parsed:
                 parsed["visualization_suggestions"] = []
+            elif not isinstance(parsed["visualization_suggestions"], list):
+                parsed["visualization_suggestions"] = []
+
+            # Clean up string fields (remove extra whitespace, normalize newlines)
+            if isinstance(parsed.get("interpretation"), str):
+                parsed["interpretation"] = parsed["interpretation"].strip()
+            if isinstance(parsed.get("summary"), str):
+                parsed["summary"] = parsed["summary"].strip()
 
             return parsed
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON response: {str(e)}")
+            logger.error(f"Error at line {e.lineno}, column {e.colno}: {e.msg}")
             logger.error(f"Raw response (first 1000 chars): {response[:1000]}")
-
-            # Try to extract JSON from mixed content
-            try:
-                # Sometimes Claude wraps JSON in explanatory text
-                # Try to find JSON block using regex
-                import re
-                json_match = re.search(r'\{[\s\S]*\}', response)
-                if json_match:
-                    json_str = json_match.group(0)
-                    parsed = json.loads(json_str)
-                    logger.info("Successfully extracted JSON from mixed content")
-                    return parsed
-            except:
-                pass
-
             return None
+
         except Exception as e:
             logger.error(f"Error parsing response: {str(e)}", exc_info=True)
+            logger.error(f"Response type: {type(response)}")
+            logger.error(f"Response preview: {response[:500] if response else 'None'}")
             return None
 
     def generate_executive_summary(

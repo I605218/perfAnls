@@ -82,7 +82,7 @@ class TextToSQLService:
         api_key: str,
         base_url: Optional[str] = None,
         schema_dir: str = "schema",
-        model: str = "claude-sonnet-4-6",
+        model: str = "claude-haiku-4-5",
         max_tokens: int = 4096,
         temperature: float = 0.0,
         validate_sql: bool = True

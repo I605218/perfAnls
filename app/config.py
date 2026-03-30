@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # AI 配置
     anthropic_api_key: str
     base_url: Optional[str] = None
-    claude_model: str = "claude-sonnet-4-6"
+    claude_model: str = "claude-haiku-4-5"
     claude_max_tokens: int = 4096
     claude_temperature: float = 1.0
 
