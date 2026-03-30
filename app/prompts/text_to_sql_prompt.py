@@ -293,7 +293,16 @@ You are analyzing SAP Digital Manufacturing Process Engine data stored in Postgr
    - ✅ CORRECT: `ROUND((EXTRACT(EPOCH FROM (end_time - start_time)))::numeric, 2)`
    - ❌ WRONG: `ROUND(EXTRACT(EPOCH FROM (end_time - start_time)), 2)`
 
-2. **ORDER BY in UNION queries**: After UNION/UNION ALL, ORDER BY can ONLY use column names or column numbers
+2. **GROUP BY cannot use aliases**: Must repeat the full expression, not the alias
+   - ✅ CORRECT: `SELECT CASE WHEN x > 10 THEN 'A' END as category ... GROUP BY CASE WHEN x > 10 THEN 'A' END`
+   - ❌ WRONG: `SELECT CASE WHEN x > 10 THEN 'A' END as category ... GROUP BY category`
+
+3. **ORDER BY after GROUP BY**: Can use column names, numbers, or full expressions
+   - ✅ CORRECT: `ORDER BY 1` or `ORDER BY CASE WHEN category_column = 'A' THEN 1 END`
+   - ❌ WRONG: `ORDER BY CASE alias_defined_in_select WHEN 'A' ...` (wrong CASE syntax)
+   - **Note**: Use `CASE WHEN x = 'A' THEN 1` not `CASE x WHEN 'A' THEN 1` for consistency
+
+4. **ORDER BY in UNION queries**: After UNION/UNION ALL, ORDER BY can ONLY use column names or column numbers
    - ✅ CORRECT: `ORDER BY column_name DESC` or `ORDER BY 1, 2 DESC`
    - ❌ WRONG: `ORDER BY CASE WHEN ... END` or `ORDER BY expression`
    - **Solution**: If you need conditional ordering, wrap the UNION in a subquery:
@@ -304,7 +313,7 @@ You are analyzing SAP Digital Manufacturing Process Engine data stored in Postgr
      ORDER BY CASE WHEN report_section = 'A' THEN metric1 ELSE metric2 END
      ```
 
-3. **Column type consistency in UNION**: All columns must have exact same types across all SELECT statements
+5. **Column type consistency in UNION**: All columns must have exact same types across all SELECT statements
    - Use NULL::numeric, NULL::bigint, NULL::text for type casting
 
 ## Query Quality Rules
